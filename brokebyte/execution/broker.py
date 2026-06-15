@@ -7,12 +7,12 @@ this module never hardcodes paper=False.
 from __future__ import annotations
 
 from alpaca.trading.client import TradingClient
-from alpaca.trading.enums import OrderSide, TimeInForce
 from alpaca.trading.models import Order
-from alpaca.trading.requests import MarketOrderRequest
 
 from brokebyte.config import Config
-from brokebyte.risk.gate import OrderIntent
+from brokebyte.risk.kill_switch import KillSwitchResult, execute_kill_switch
+from brokebyte.risk.orders import build_bracket_order
+from brokebyte.risk.sizing import PositionPlan
 
 
 class Broker:
@@ -30,15 +30,21 @@ class Broker:
             "account_id": str(account.id),
             "status": str(account.status),
             "cash": account.cash,
+            "equity": account.equity,
+            "last_equity": account.last_equity,
             "portfolio_value": account.portfolio_value,
             "buying_power": account.buying_power,
         }
 
-    def submit_market_order(self, intent: OrderIntent) -> Order:
-        order_data = MarketOrderRequest(
-            symbol=intent.symbol,
-            qty=intent.qty,
-            side=OrderSide.BUY if intent.side == "buy" else OrderSide.SELL,
-            time_in_force=TimeInForce.DAY,
-        )
-        return self._client.submit_order(order_data)
+    def get_positions(self) -> list[dict]:
+        positions = self._client.get_all_positions()
+        return [
+            {"symbol": p.symbol, "qty": p.qty, "market_value": p.market_value or "0"}
+            for p in positions
+        ]
+
+    def submit_bracket_order(self, plan: PositionPlan) -> Order:
+        return self._client.submit_order(build_bracket_order(plan))
+
+    def kill_switch(self, reason: str) -> KillSwitchResult:
+        return execute_kill_switch(self._client, reason)

@@ -31,6 +31,11 @@ Scaffold the project: config module (env-var keys, `TRADING_MODE` defaulting to 
 
 **Status: COMPLETE (2026-06-15).** See README / repo for the resulting scaffold (`brokebyte/` package). Next up: Phase 2 (risk module + guards 8-11, with unit tests written first).
 
+### PHASE 2 — Risk module + guards 8-11
+Volatility-based position sizing, broker-side bracket stop/take-profit, portfolio limits (exposure/max-positions/daily-loss halt + kill switch), and guards 8-11 (injection/grounding, regime filter, liquidity/spread, circuit breakers), each unit-tested in isolation before the risk gate (`brokebyte/risk/gate.py`) orchestrates them. Wired into `main.py` against real AAPL bars/quote.
+
+**Status: COMPLETE (2026-06-15).** 76 unit tests passing (`brokebyte/risk/`, `brokebyte/guards/`, `brokebyte/analysis/`). End-to-end paper run confirmed: regime classified from live bars, position sized off ATR, and a broker-side bracket order (market entry + stop-loss + take-profit legs) filled on Alpaca paper. Next up: Phase 3 (real LLM provider behind `LLMProvider`, replacing the stub).
+
 ---
 
 ## FULL TECHNICAL SPEC (source of truth)
