@@ -27,7 +27,7 @@ import pandas as pd
 
 from brokebyte.analysis.indicators import atr
 from brokebyte.common import Quote
-from brokebyte.fusion.context import check_confluence
+from brokebyte.fusion.context import TradeProposal, check_confluence
 from brokebyte.guards.circuit_breakers import CircuitBreaker
 from brokebyte.guards.grounding import check_injection_patterns, check_symbol_grounding
 from brokebyte.guards.liquidity import check_price_floor, check_spread
@@ -43,14 +43,19 @@ class GateDecision:
     plan: PositionPlan | None
     reason: str
     kill_switch_reason: str | None = None
+    proposal: TradeProposal | None = None
 
     @property
     def action(self) -> str:
         return "ENTER" if self.plan is not None else "HOLD"
 
 
-def _hold(reason: str, kill_switch_reason: str | None = None) -> GateDecision:
-    return GateDecision(plan=None, reason=reason, kill_switch_reason=kill_switch_reason)
+def _hold(
+    reason: str,
+    kill_switch_reason: str | None = None,
+    proposal: TradeProposal | None = None,
+) -> GateDecision:
+    return GateDecision(plan=None, reason=reason, kill_switch_reason=kill_switch_reason, proposal=proposal)
 
 
 def evaluate(
@@ -111,13 +116,13 @@ def evaluate(
     # 6. Module 3 — context fusion (confluence: trend + support/resistance) ----
     confluence_check, proposal = check_confluence(verdict, bars, quote.mid)
     if not confluence_check.ok:
-        return _hold(f"module 3 (confluence): {confluence_check.reason}")
+        return _hold(f"module 3 (confluence): {confluence_check.reason}", proposal=proposal)
 
     # 7. Module 4 — volatility-based sizing + exposure cap ----------------------
     try:
         atr_value = atr(bars)
     except ValueError:
-        return _hold("not enough bar history to compute ATR")
+        return _hold("not enough bar history to compute ATR", proposal=proposal)
 
     side = "buy" if verdict.direction == Direction.LONG else "sell"
     plan = size_position(
@@ -130,13 +135,14 @@ def evaluate(
         size_multiplier=proposal.regime.size_multiplier,
     )
     if plan is None:
-        return _hold("position size rounds to zero")
+        return _hold("position size rounds to zero", proposal=proposal)
 
     exposure_check = check_exposure(portfolio, plan, limits)
     if not exposure_check.ok:
-        return _hold(f"portfolio: {exposure_check.reason}")
+        return _hold(f"portfolio: {exposure_check.reason}", proposal=proposal)
 
     return GateDecision(
         plan=plan,
         reason=f"entry approved (trend={proposal.regime.trend.value}, size_multiplier={proposal.regime.size_multiplier})",
+        proposal=proposal,
     )

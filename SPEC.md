@@ -46,6 +46,17 @@ Fuses the LLM verdict with technical context into a `TradeProposal` and requires
 
 **Status: COMPLETE (2026-06-15).** 19 new unit tests passing (139 total: support/resistance window logic, confluence trend-agreement and level-proximity in both directions, fail-safe behavior on insufficient bars, and updated risk-gate tests with a 50-bar trending fixture). End-to-end paper run confirmed: pipeline unchanged for the non-material hardcoded signal (HOLD "verdict not material" at step 1, before confluence is reached). Next up: Phase 5 (validation harness — Track A mechanical backtest + Track B forward-paper logging + Module 7 feedback loop, per build order step 5).
 
+Phase 5 bundles three large, fairly independent subsystems. As with prior phases, it's split into sub-phases shipped one at a time:
+- **5a** — Trade/decision memory store (Module 7's storage layer; below).
+- **5b** — Track A: mechanical backtest harness (walk-forward, costs/slippage, pass criteria).
+- **5c** — §5a success-metrics computation (Sortino, max drawdown, profit factor, expectancy, win rate) over the memory store, for both Track A's report and Track B's soak.
+- **5d** — Module 7 retrieval (RAG/embeddings) + calibration layers (new deps; gated on having enough recorded decisions to be meaningful).
+
+### PHASE 5a — Trade/Decision Memory Store (Module 7 storage layer)
+New `brokebyte/memory/store.py`: a SQLite-backed `DecisionStore` logging every risk-gate decision (ENTER or HOLD, including rejections) with full decision-time context — the news event, LLM verdict, fused `TradeProposal` (regime/support/resistance, when Module 3 was reached), and the outcome (action, reason, kill-switch reason, and sizing if entered). `GateDecision` gained a `proposal: TradeProposal | None` field (populated from step 6 onward) so this context is available to record. Wired into `main.py`: one row per evaluated event, written to `logs/decisions.db`.
+
+**Status: COMPLETE (2026-06-15).** 6 new unit tests passing (145 total): schema creation, round-trip record/recent/count for HOLD-before-confluence, HOLD-with-proposal, and ENTER-with-plan shapes, kill-switch-reason persistence, and ordering. End-to-end paper run confirmed: the non-material hardcoded signal produced one `decisions.db` row with `action=HOLD, reason="verdict not material"` and all proposal/plan columns correctly NULL (gate held before reaching Module 3). Next up: Phase 5b (Track A mechanical backtest harness).
+
 ---
 
 ## FULL TECHNICAL SPEC (source of truth)

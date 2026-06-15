@@ -1,6 +1,6 @@
-"""Phase 3 entry point: ingestion -> LLM (Haiku/Sonnet two-tier) -> risk gate
-(sizing, portfolio limits, guards 8-11) -> execution (bracket orders / kill
-switch).
+"""Entry point: ingestion -> LLM (Haiku/Sonnet two-tier) -> context fusion ->
+risk gate (sizing, portfolio limits, guards 8-11) -> execution (bracket
+orders / kill switch) -> decision memory (Module 7 storage layer).
 
 Still a single hardcoded signal — live ingestion is wired up in a later
 phase behind the same NewsEvent shape, so this wiring doesn't need to change.
@@ -18,6 +18,7 @@ from brokebyte.guards.circuit_breakers import CircuitBreaker
 from brokebyte.ingestion.events import hardcoded_signal
 from brokebyte.llm.claude_provider import build_claude_provider
 from brokebyte.logging_setup import configure_logging, get_logger
+from brokebyte.memory.store import DecisionStore
 from brokebyte.risk import gate
 from brokebyte.risk import portfolio as portfolio_module
 from brokebyte.risk.limits import load_risk_limits
@@ -34,6 +35,7 @@ def run_once() -> None:
     broker = Broker(config)
     market_data = MarketData(config)
     circuit_breaker = CircuitBreaker()
+    memory = DecisionStore(config.log_dir / "decisions.db")
 
     account = broker.get_account_summary()
     log.info("account_summary", **account)
@@ -80,6 +82,7 @@ def run_once() -> None:
         reason=decision.reason,
         kill_switch_reason=decision.kill_switch_reason,
     )
+    memory.record(event, verdict, decision)
 
     if decision.kill_switch_reason:
         result = broker.kill_switch(decision.kill_switch_reason)

@@ -2,6 +2,7 @@ import pandas as pd
 
 from brokebyte.common import Quote
 from brokebyte.guards.circuit_breakers import CircuitBreaker
+from brokebyte.guards.regime import Trend
 from brokebyte.ingestion.events import NewsEvent
 from brokebyte.llm.provider import Direction, LLMVerdict, TimeHorizon
 from brokebyte.risk import gate
@@ -107,6 +108,7 @@ def test_hold_when_not_material():
 
     assert decision.action == "HOLD"
     assert "not material" in decision.reason
+    assert decision.proposal is None
 
 
 def test_hold_when_symbol_none():
@@ -245,6 +247,8 @@ def test_hold_when_trend_is_choppy():
     assert decision.action == "HOLD"
     assert "module 3 (confluence)" in decision.reason
     assert "trend=choppy" in decision.reason
+    assert decision.proposal is not None
+    assert decision.proposal.regime.trend == Trend.CHOPPY
 
 
 def test_hold_when_long_against_downtrend():
@@ -253,6 +257,9 @@ def test_hold_when_long_against_downtrend():
     assert decision.action == "HOLD"
     assert "module 3 (confluence)" in decision.reason
     assert "verdict=long but trend=down" in decision.reason
+    assert decision.proposal is not None
+    assert decision.proposal.support == 99.0
+    assert decision.proposal.resistance == 120.0
 
 
 def test_hold_when_short_against_uptrend():
@@ -303,6 +310,8 @@ def test_enter_long_on_clean_signal():
     assert decision.plan.qty == 100
     assert decision.plan.stop_price == 96.0
     assert decision.plan.take_profit_price == 108.0
+    assert decision.proposal is not None
+    assert decision.proposal.regime.trend == Trend.UP
 
 
 def test_enter_short_on_clean_signal():
