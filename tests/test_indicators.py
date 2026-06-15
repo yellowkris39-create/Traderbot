@@ -42,3 +42,35 @@ def test_sma_raises_with_insufficient_data():
 
     with pytest.raises(ValueError):
         indicators.sma(bars, period=10)
+
+
+def test_support_resistance_uses_lowest_low_and_highest_high():
+    highs = [101, 105, 102, 110, 103]
+    lows = [99, 100, 98, 104, 101]
+    closes = [100, 103, 100, 107, 102]
+    bars = _bars(highs, lows, closes)
+
+    support, resistance = indicators.support_resistance(bars, lookback=5)
+
+    assert support == 98
+    assert resistance == 110
+
+
+def test_support_resistance_only_considers_lookback_window():
+    # First bar has the widest range but falls outside a 3-bar lookback.
+    highs = [200, 101, 102, 103]
+    lows = [1, 99, 98, 100]
+    closes = [100, 100, 100, 100]
+    bars = _bars(highs, lows, closes)
+
+    support, resistance = indicators.support_resistance(bars, lookback=3)
+
+    assert support == 98
+    assert resistance == 103
+
+
+def test_support_resistance_raises_with_insufficient_data():
+    bars = _bars([101, 102], [99, 100], [100, 101])
+
+    with pytest.raises(ValueError):
+        indicators.support_resistance(bars, lookback=3)

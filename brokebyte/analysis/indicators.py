@@ -1,9 +1,6 @@
-"""Minimal technical indicators shared by position sizing (risk) and the
-regime guard. Operates on a pandas DataFrame with at least
-`high`, `low`, `close` columns, oldest-first.
-
-Full Context Fusion (Module 3 — support/resistance, confluence rules) is
-Phase 4; this module only provides the building blocks needed now.
+"""Minimal technical indicators shared by position sizing (risk), the
+regime guard, and context fusion (Module 3). Operates on a pandas
+DataFrame with at least `high`, `low`, `close` columns, oldest-first.
 """
 
 from __future__ import annotations
@@ -44,3 +41,12 @@ def sma(bars: pd.DataFrame, period: int, column: str = "close") -> float:
     if pd.isna(value):
         raise ValueError(f"not enough bars ({len(bars)}) to compute SMA({period})")
     return float(value)
+
+
+def support_resistance(bars: pd.DataFrame, lookback: int = 20) -> tuple[float, float]:
+    """(support, resistance) = (lowest low, highest high) over the most
+    recent `lookback` bars. Raises if there isn't enough data."""
+    if len(bars) < lookback:
+        raise ValueError(f"not enough bars ({len(bars)}) to compute support/resistance over {lookback}")
+    window = bars.iloc[-lookback:]
+    return float(window["low"].min()), float(window["high"].max())

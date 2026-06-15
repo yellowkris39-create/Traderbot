@@ -39,13 +39,40 @@ def make_event(**overrides):
 
 def make_bars(n=20, close=100.0, high_offset=1.0, low_offset=1.0):
     """n bars with constant close/high/low -> ATR(14) is well-defined
-    (n >= 14) but n < regime's default slow_period (50), so the regime
-    guard fails safe to (CHOPPY, high_vol=True, size_multiplier=0.25)."""
+    (n >= 14) but n < regime's default slow_period (50), so classify_regime
+    fails safe to CHOPPY (high_vol=True, size_multiplier=0.25). Under
+    Module 3, CHOPPY never has confluence, so this fixture HOLDs at the
+    confluence step for either direction."""
     return pd.DataFrame(
         {
             "high": [close + high_offset] * n,
             "low": [close - low_offset] * n,
             "close": [close] * n,
+        }
+    )
+
+
+def make_trending_bars(direction="up", n=50):
+    """n bars stepping by $1/bar -> TR=2 every bar -> ATR(14)=2, and
+    n >= slow_period(50) so classify_regime sees a real trend
+    (high_vol=False, size_multiplier=1.0). Last close is always 100.
+
+    direction="up":   closes 51..100 -> Trend.UP,   support_resistance(20) = (80, 101)
+    direction="down": closes 149..100 -> Trend.DOWN, support_resistance(20) = (99, 120)
+
+    In both cases price=100 sits ~1% from the nearer level, clear of the
+    0.5% near-level threshold, so neither direction is blocked by Module 3's
+    support/resistance check.
+    """
+    if direction == "up":
+        closes = [51.0 + i for i in range(n)]
+    else:
+        closes = [149.0 - i for i in range(n)]
+    return pd.DataFrame(
+        {
+            "high": [c + 1.0 for c in closes],
+            "low": [c - 1.0 for c in closes],
+            "close": closes,
         }
     )
 
@@ -196,42 +223,94 @@ def test_hold_when_spread_too_wide():
 
 
 def test_hold_when_exposure_cap_would_be_exceeded():
-    # Existing AAPL position already at 9% of equity; sized entry would push
-    # total exposure past the 10% cap.
+    # Existing AAPL position already at 9% of equity; sized entry (qty=100 @
+    # $100, size_multiplier=1.0) would push total exposure to $19,000, past
+    # the $10,000 (10% of equity) cap.
     portfolio = make_portfolio(positions={"AAPL": PositionInfo("AAPL", 90, 9_000)})
 
-    decision = call_gate(portfolio=portfolio)
+    decision = call_gate(portfolio=portfolio, bars=make_trending_bars("up"))
 
     assert decision.action == "HOLD"
     assert "exposure" in decision.reason
+
+
+# --- context fusion (Module 3) ------------------------------------------------
+
+
+def test_hold_when_trend_is_choppy():
+    # Default bars (make_bars) fail safe to CHOPPY, which never has
+    # confluence with either direction.
+    decision = call_gate()
+
+    assert decision.action == "HOLD"
+    assert "module 3 (confluence)" in decision.reason
+    assert "trend=choppy" in decision.reason
+
+
+def test_hold_when_long_against_downtrend():
+    decision = call_gate(bars=make_trending_bars("down"))
+
+    assert decision.action == "HOLD"
+    assert "module 3 (confluence)" in decision.reason
+    assert "verdict=long but trend=down" in decision.reason
+
+
+def test_hold_when_short_against_uptrend():
+    decision = call_gate(verdict=make_verdict(direction=Direction.SHORT), bars=make_trending_bars("up"))
+
+    assert decision.action == "HOLD"
+    assert "module 3 (confluence)" in decision.reason
+    assert "verdict=short but trend=up" in decision.reason
+
+
+def test_hold_when_long_blocked_near_resistance():
+    # resistance == 101 for an uptrend; price 0.4% below it.
+    decision = call_gate(bars=make_trending_bars("up"), quote=make_quote(bid=100.55, ask=100.65))
+
+    assert decision.action == "HOLD"
+    assert "module 3 (confluence)" in decision.reason
+    assert "resistance" in decision.reason
+
+
+def test_hold_when_short_blocked_near_support():
+    # support == 99 for a downtrend; price 0.4% above it.
+    decision = call_gate(
+        verdict=make_verdict(direction=Direction.SHORT),
+        bars=make_trending_bars("down"),
+        quote=make_quote(bid=99.35, ask=99.45),
+    )
+
+    assert decision.action == "HOLD"
+    assert "module 3 (confluence)" in decision.reason
+    assert "support" in decision.reason
 
 
 # --- happy path ----------------------------------------------------------------
 
 
 def test_enter_long_on_clean_signal():
-    # bars: close=100, high=101, low=99 -> TR=2 for all rows -> ATR(14)=2
-    # regime fails safe (20 bars < slow_period 50) -> size_multiplier=0.25
+    # bars: closes 51..100, high=close+1, low=close-1 -> TR=2 every bar ->
+    # ATR(14)=2; n=50 == slow_period -> Trend.UP, size_multiplier=1.0
     # stop_distance = 2 * 2 = 4
-    # qty_by_risk = floor(100000*0.005*0.25/4) = 31
-    # qty_by_exposure = floor(100000*0.10*0.25/100) = 25 -> binds
-    decision = call_gate()
+    # qty_by_risk = floor(100000*0.005*1.0/4) = 125
+    # qty_by_exposure = floor(100000*0.10*1.0/100) = 100 -> binds
+    decision = call_gate(bars=make_trending_bars("up"))
 
     assert decision.action == "ENTER"
     assert decision.plan is not None
     assert decision.plan.symbol == "AAPL"
     assert decision.plan.side == "buy"
-    assert decision.plan.qty == 25
+    assert decision.plan.qty == 100
     assert decision.plan.stop_price == 96.0
     assert decision.plan.take_profit_price == 108.0
 
 
 def test_enter_short_on_clean_signal():
-    decision = call_gate(verdict=make_verdict(direction=Direction.SHORT))
+    decision = call_gate(verdict=make_verdict(direction=Direction.SHORT), bars=make_trending_bars("down"))
 
     assert decision.action == "ENTER"
     assert decision.plan is not None
     assert decision.plan.side == "sell"
-    assert decision.plan.qty == 25
+    assert decision.plan.qty == 100
     assert decision.plan.stop_price == 104.0
     assert decision.plan.take_profit_price == 92.0

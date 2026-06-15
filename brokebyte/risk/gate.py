@@ -1,4 +1,4 @@
-"""Risk Gate (Module 4) — Phase 2.
+"""Risk Gate (Module 4) — Phase 2, extended in Phase 4 with Module 3.
 
 Orchestrates the risk/guard checks into a single entry decision. Default
 action is HOLD: a PositionPlan is returned only if every check passes, in
@@ -9,7 +9,7 @@ order from cheapest/most-likely-to-reject to most expensive:
 3. Guard 11 — circuit breakers (consecutive errors, trade rate)
 4. Module 4 — portfolio limits (daily-loss halt, max open positions)
 5. Guard 10 — liquidity (price floor, spread)
-6. Guard 9  — regime size multiplier
+6. Module 3 — context fusion (confluence: trend + support/resistance)
 7. Module 4 — volatility-based sizing + exposure cap
 
 A daily-loss-halt trip also asks the caller to fire the kill switch
@@ -27,10 +27,10 @@ import pandas as pd
 
 from brokebyte.analysis.indicators import atr
 from brokebyte.common import Quote
+from brokebyte.fusion.context import check_confluence
 from brokebyte.guards.circuit_breakers import CircuitBreaker
 from brokebyte.guards.grounding import check_injection_patterns, check_symbol_grounding
 from brokebyte.guards.liquidity import check_price_floor, check_spread
-from brokebyte.guards.regime import classify_regime
 from brokebyte.ingestion.events import NewsEvent
 from brokebyte.llm.provider import Direction, LLMVerdict
 from brokebyte.risk.limits import RiskLimits
@@ -108,8 +108,10 @@ def evaluate(
     if not spread_check.ok:
         return _hold(f"guard 10 (liquidity): {spread_check.reason}")
 
-    # 6. Guard 9 — regime --------------------------------------------------------
-    regime = classify_regime(bars)
+    # 6. Module 3 — context fusion (confluence: trend + support/resistance) ----
+    confluence_check, proposal = check_confluence(verdict, bars, quote.mid)
+    if not confluence_check.ok:
+        return _hold(f"module 3 (confluence): {confluence_check.reason}")
 
     # 7. Module 4 — volatility-based sizing + exposure cap ----------------------
     try:
@@ -125,7 +127,7 @@ def evaluate(
         atr=atr_value,
         equity=portfolio.equity,
         limits=limits,
-        size_multiplier=regime.size_multiplier,
+        size_multiplier=proposal.regime.size_multiplier,
     )
     if plan is None:
         return _hold("position size rounds to zero")
@@ -136,5 +138,5 @@ def evaluate(
 
     return GateDecision(
         plan=plan,
-        reason=f"entry approved (regime={regime.trend.value}, size_multiplier={regime.size_multiplier})",
+        reason=f"entry approved (trend={proposal.regime.trend.value}, size_multiplier={proposal.regime.size_multiplier})",
     )
