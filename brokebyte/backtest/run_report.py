@@ -52,7 +52,7 @@ def main(symbol: str = "AAPL", n_windows: int = 4, lookback_days: int = 3 * 365)
         print(f"  total_return: {m.total_return_pct:.2%}")
         all_trades.extend(window.result.trades)
 
-    combined = compute_metrics(all_trades, initial_equity=100_000.0)
+    combined = compute_metrics([t.pnl for t in all_trades], initial_equity=100_000.0)
     print(
         f"\nAll windows combined ({combined.trade_count} trades total; each window's "
         "equity curve restarts at $100,000, so this is a per-trade rollup, not a "

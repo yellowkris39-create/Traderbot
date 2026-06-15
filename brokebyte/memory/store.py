@@ -7,11 +7,16 @@ reached Module 3), and the gate's outcome (action, reason, and sizing if
 entered).
 
 This is the raw substrate for later phases: Track B's forward-paper
-evaluation (§5a metrics computed over this log) and Module 7's
-retrieval/calibration layers. Entry/exit/P&L reconciliation for filled
-trades, and "what-if" outcomes for HOLDs, are added in a later phase once a
-position-monitoring loop exists - this store only records what the gate knew
-at decision time.
+evaluation (§5a metrics computed over this log, see
+brokebyte.memory.metrics) and Module 7's retrieval/calibration layers.
+
+ENTER rows additionally carry an *outcome* (exit_price, exit_reason, pnl,
+closed_at), recorded after the fact via record_outcome() once a position
+closes. closed_trade_pnls() feeds those into
+brokebyte.backtest.metrics.compute_metrics for §5a's success metrics.
+Detecting that a position closed (polling the broker / a position-monitoring
+loop) and "what-if" outcomes for HOLDs are added in a later phase - this
+store only provides the schema and accessors for outcomes once known.
 """
 
 from __future__ import annotations
@@ -20,6 +25,7 @@ import sqlite3
 from datetime import datetime, timezone
 from pathlib import Path
 
+from brokebyte.guards.regime import Trend
 from brokebyte.ingestion.events import NewsEvent
 from brokebyte.llm.provider import LLMVerdict
 from brokebyte.risk.gate import GateDecision
@@ -53,9 +59,23 @@ CREATE TABLE IF NOT EXISTS decisions (
     plan_stop_price REAL,
     plan_take_profit_price REAL,
     plan_risk_amount REAL,
-    plan_notional REAL
+    plan_notional REAL,
+    exit_price REAL,
+    exit_reason TEXT,
+    pnl REAL,
+    closed_at TEXT
 )
 """
+
+# Columns added after the initial Phase 5a schema. ALTER TABLE ADD COLUMN'd
+# onto pre-existing decisions.db files in _migrate so accumulated history
+# isn't lost when the schema grows.
+_OUTCOME_COLUMNS = {
+    "exit_price": "REAL",
+    "exit_reason": "TEXT",
+    "pnl": "REAL",
+    "closed_at": "TEXT",
+}
 
 
 class DecisionStore:
@@ -66,6 +86,7 @@ class DecisionStore:
         conn = self._connect()
         try:
             conn.execute(SCHEMA)
+            self._migrate(conn)
             conn.commit()
         finally:
             conn.close()
@@ -74,6 +95,16 @@ class DecisionStore:
         conn = sqlite3.connect(self._path)
         conn.row_factory = sqlite3.Row
         return conn
+
+    @staticmethod
+    def _migrate(conn: sqlite3.Connection) -> None:
+        """Add any outcome columns missing from a decisions.db created
+        before they existed. A no-op for freshly created tables, which
+        already have them via SCHEMA."""
+        existing = {row[1] for row in conn.execute("PRAGMA table_info(decisions)")}
+        for name, col_type in _OUTCOME_COLUMNS.items():
+            if name not in existing:
+                conn.execute(f"ALTER TABLE decisions ADD COLUMN {name} {col_type}")
 
     def record(self, event: NewsEvent, verdict: LLMVerdict, decision: GateDecision) -> int:
         """Persist one gate decision. Returns the new row's id."""
@@ -145,5 +176,54 @@ class DecisionStore:
         try:
             cursor = conn.execute("SELECT COUNT(*) FROM decisions")
             return int(cursor.fetchone()[0])
+        finally:
+            conn.close()
+
+    def record_outcome(
+        self,
+        decision_id: int,
+        exit_price: float,
+        exit_reason: str,
+        pnl: float,
+        closed_at: datetime | None = None,
+    ) -> None:
+        """Attach a realized outcome to a previously recorded ENTER decision,
+        once a future position-monitoring loop detects the position closed."""
+        closed_at = closed_at or datetime.now(timezone.utc)
+
+        conn = self._connect()
+        try:
+            cursor = conn.execute(
+                "UPDATE decisions SET exit_price = ?, exit_reason = ?, pnl = ?, closed_at = ? WHERE id = ?",
+                (exit_price, exit_reason, pnl, closed_at.isoformat(), decision_id),
+            )
+            conn.commit()
+            if cursor.rowcount == 0:
+                raise ValueError(f"no decision with id={decision_id}")
+        finally:
+            conn.close()
+
+    def closed_trade_pnls(self) -> list[float]:
+        """pnl for every decision with a recorded outcome, oldest first --
+        feeds directly into brokebyte.backtest.metrics.compute_metrics for
+        §5a's success metrics over Track B's forward-paper soak."""
+        conn = self._connect()
+        try:
+            cursor = conn.execute("SELECT pnl FROM decisions WHERE pnl IS NOT NULL ORDER BY id")
+            return [row["pnl"] for row in cursor.fetchall()]
+        finally:
+            conn.close()
+
+    def regime_coverage(self) -> dict[Trend, int]:
+        """Tally how often each Trend was in effect across every decision
+        that reached Module 3 (ENTER or HOLD), for §5a "regime coverage"
+        reporting over Track B's soak."""
+        counts = {Trend.UP: 0, Trend.DOWN: 0, Trend.CHOPPY: 0}
+        conn = self._connect()
+        try:
+            cursor = conn.execute("SELECT regime_trend FROM decisions WHERE regime_trend IS NOT NULL")
+            for row in cursor.fetchall():
+                counts[Trend(row["regime_trend"])] += 1
+            return counts
         finally:
             conn.close()

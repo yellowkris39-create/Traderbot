@@ -68,5 +68,5 @@ def test_window_metrics_and_regime_counts_match_recomputation():
 
     for window in windows:
         window_bars = bars.iloc[window.start_index : window.end_index].reset_index(drop=True)
-        assert window.metrics == compute_metrics(window.result.trades, 100_000.0)
+        assert window.metrics == compute_metrics([t.pnl for t in window.result.trades], 100_000.0)
         assert window.regime_counts == regime_counts(window_bars)

@@ -63,7 +63,7 @@ def run_walkforward(
         window_bars = bars.iloc[start:end].reset_index(drop=True)
 
         result = run_backtest(window_bars, symbol, limits, cost_model, initial_equity)
-        metrics = compute_metrics(result.trades, initial_equity)
+        metrics = compute_metrics([t.pnl for t in result.trades], initial_equity)
         counts = regime_counts(window_bars)
 
         windows.append(

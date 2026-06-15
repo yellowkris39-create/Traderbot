@@ -83,6 +83,21 @@ Profitability (Sortino, profit factor, win rate) is explicitly **not** gated at 
 
 **Status: COMPLETE (2026-06-15).** 21 new unit tests passing (166 total): cost model (slippage direction, SEC/FINRA fee calc incl. TAF cap), engine (take-profit/stop-loss/end-of-data exits and no-trade-when-too-short, each cross-checked against `size_position`/`atr`/`classify_regime` directly rather than hand-computed magic numbers), metrics (empty/all-win/mixed/never-recovers drawdown cases, regime coverage), and walk-forward (window splitting incl. remainder, labeling, wiring). End-to-end run confirmed against real Alpaca historical data: 750 daily AAPL bars (2023-06-15 to 2026-06-14) split into 4 walk-forward windows, all four pass criteria held in every window (32 total trades; regime coverage spanned UP/DOWN/CHOPPY in every window; max drawdown ranged 0.75%-1.67%, all with recovery tracked). Next up: Phase 5c (§5a success-metrics computation over the `DecisionStore`, reusing this phase's `metrics.py`).
 
+### PHASE 5c — Success Metrics Over the Memory Store
+
+- `compute_metrics()` (Sec 5b) now takes a plain `list[float]` of per-trade P&Ls instead of `list[BacktestTrade]` — it only ever used `.pnl`, and this lets Track A (`backtest/engine.py`'s `BacktestTrade.pnl`) and Track B (below) share one metrics implementation without either depending on the other's trade representation. `walkforward.py` and `backtest/run_report.py` updated accordingly.
+- `brokebyte/backtest/metrics.py` gained the §5a **promotion thresholds**, written up front (see §5a above): `PromotionThresholds` (frozen dataclass, defaults in `DEFAULT_THRESHOLDS`), `PromotionCheck`, and `evaluate_promotion(metrics, regime_coverage, thresholds)`.
+- `brokebyte/memory/store.py` (`DecisionStore`) gained an outcome side to its schema — `exit_price`, `exit_reason`, `pnl`, `closed_at` columns (added via `ALTER TABLE` migration for pre-existing `decisions.db` files, so accumulated history isn't lost) — plus:
+  - `record_outcome(decision_id, exit_price, exit_reason, pnl, closed_at=None)` — attaches a realized outcome to a previously recorded ENTER decision.
+  - `closed_trade_pnls()` — pnl for every decision with a recorded outcome, oldest first, ready for `compute_metrics`.
+  - `regime_coverage()` — tallies `regime_trend` across every recorded decision that reached Module 3 (ENTER or HOLD), for §5a regime-coverage reporting.
+- New `brokebyte/memory/metrics.py`: `compute_decision_store_metrics(store, initial_equity)` bridges `DecisionStore.closed_trade_pnls()` into `compute_metrics`.
+- New `brokebyte/memory/run_report.py` — CLI (`python -m brokebyte.memory.run_report [DB_PATH]`, defaults to `logs/decisions.db`): prints decision counts, §5a metrics over closed trades, regime coverage, and the `evaluate_promotion` verdict (PASS / FAIL / INSUFFICIENT DATA + reasons) against `DEFAULT_THRESHOLDS`. This is the report to run periodically during Track B's soak.
+
+**Known limitation (documented, not fixed in this phase):** nothing yet calls `record_outcome` automatically. Detecting that a paper position has closed (polling the broker / a position-monitoring loop) is a future phase — until then, `brokebyte.memory.run_report` correctly reports "0 with closed-trade outcomes" and an INSUFFICIENT DATA promotion status. "What-if" outcomes for HOLD decisions (Module 7's "trades not taken") are also deferred to that future phase.
+
+**Status: COMPLETE (2026-06-15).** 13 new unit tests passing (179 total): `compute_metrics`/walk-forward tests updated for the `list[float]` signature; `evaluate_promotion` covers insufficient-trades, insufficient-regime-coverage, all-thresholds-pass, negative-expectancy-fails, excess-drawdown-fails, and custom-threshold cases; `DecisionStore` covers `record_outcome` (incl. unknown-id error), `closed_trade_pnls` ordering/filtering, `regime_coverage` tallying, and schema migration from a pre-5c `decisions.db`; `memory/metrics.py` cross-checked against `compute_metrics` directly. End-to-end: `python -m brokebyte.memory.run_report` against the real `logs/decisions.db` (1 HOLD row, no outcomes) correctly reports INSUFFICIENT DATA; a synthetic sqlite DB with 2 closed trades + regime coverage produced correct `PerformanceMetrics` and promotion output. Next up: Phase 5d (Module 7 retrieval/embeddings + calibration layers).
+
 ---
 
 ## FULL TECHNICAL SPEC (source of truth)
@@ -264,6 +279,23 @@ You cannot judge the paper "training" period or the promotion gates without pre-
 - **Win rate** (secondary — a high win rate with a few huge losers is a trap).
 - **Trade count / regime coverage** — enough trades across enough conditions to separate skill from luck.
 Set the promotion thresholds for these **up front, in writing**, so you can't move the goalposts after seeing results.
+
+#### Promotion thresholds (set 2026-06-15, before the soak — Phase 5c)
+
+Encoded in `brokebyte/backtest/metrics.py`'s `PromotionThresholds`/`DEFAULT_THRESHOLDS`, checked by `evaluate_promotion()` against `compute_metrics()` output plus regime coverage (Track A: `regime_counts()` over backtest bars; Track B: `DecisionStore.regime_coverage()` over recorded decisions):
+
+| Threshold | Value | Rationale |
+|---|---|---|
+| `min_trades` | 30 | Floor for "enough trades to separate skill from luck" above. Below this, `evaluate_promotion` reports INSUFFICIENT DATA rather than pass/fail. |
+| `min_regime_types` | 2 (of UP/DOWN/CHOPPY) | Regime coverage above — at least two distinct trends must have been observed across evaluated decisions/bars. |
+| `min_sortino` | 0.0 | Non-negative risk-adjusted return — the soak must not be net-negative on a downside-risk-adjusted basis. |
+| `min_profit_factor` | 1.0 | Gross wins must cover gross losses. |
+| `min_expectancy` | 0.0 | Positive expected P&L per trade, after costs. |
+| `max_drawdown_pct` | 0.15 | Tighter than Track A's 0.25 harness-sanity cap (Sec 5b) — this gates real strategy performance, not just mechanics. |
+
+`sortino_ratio`/`profit_factor` of `None` (no losing trades observed yet) count as passing those two — `None` there means "no downside yet", the best case, not an undefined failure.
+
+Given this strategy's fixed 1:2 risk:reward (stop = 2x ATR, take-profit = 4x ATR), these are a real bar, not trivially satisfied: a sub-50% win rate can already clear them, but a negative edge or one oversized loss will not. They are intentionally the *minimum-viable* bar for Rung 0 (Sec 7). Raising them (e.g. Sortino > 0.5-1.0) before promoting past Rung 0 is expected as the soak accumulates a track record — but per this section, that would be a new, written threshold for the *next* promotion decision, not a retroactive change to this one.
 
 ### Decision rule
 - No promotion past paper until **Track A passes** AND **Track B shows acceptable risk-adjusted forward performance over a sustained, multi-condition window** — enough trades to distinguish skill from luck.
