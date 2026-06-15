@@ -1,9 +1,9 @@
-"""Phase 2 entry point: ingestion -> LLM (stub) -> risk gate (sizing,
-portfolio limits, guards 8-11) -> execution (bracket orders / kill switch).
+"""Phase 3 entry point: ingestion -> LLM (Haiku/Sonnet two-tier) -> risk gate
+(sizing, portfolio limits, guards 8-11) -> execution (bracket orders / kill
+switch).
 
-Still a single hardcoded signal and a fixed LLM verdict — Phase 3 swaps in
-the real LLM provider and live ingestion behind the same NewsEvent/
-LLMVerdict shapes, so this wiring doesn't need to change.
+Still a single hardcoded signal — live ingestion is wired up in a later
+phase behind the same NewsEvent shape, so this wiring doesn't need to change.
 
 Run with:
     venv\\Scripts\\python.exe -m brokebyte.main
@@ -16,26 +16,11 @@ from brokebyte.execution.broker import Broker
 from brokebyte.execution.market_data import MarketData
 from brokebyte.guards.circuit_breakers import CircuitBreaker
 from brokebyte.ingestion.events import hardcoded_signal
-from brokebyte.llm.provider import Direction, LLMVerdict, StubLLMProvider, TimeHorizon
+from brokebyte.llm.claude_provider import build_claude_provider
 from brokebyte.logging_setup import configure_logging, get_logger
 from brokebyte.risk import gate
 from brokebyte.risk import portfolio as portfolio_module
 from brokebyte.risk.limits import load_risk_limits
-
-
-def build_stub_provider() -> StubLLMProvider:
-    """Fixed bullish verdict — proves the pipeline runs, nothing more.
-    Replaced by the Haiku/Sonnet two-tier provider in Phase 3."""
-    verdict = LLMVerdict(
-        material=True,
-        symbol="AAPL",
-        direction=Direction.LONG,
-        confidence=0.75,
-        time_horizon=TimeHorizon.SWING,
-        reasoning="Phase 2 stub verdict - not derived from real news.",
-        is_already_priced_in=False,
-    )
-    return StubLLMProvider(verdict)
 
 
 def run_once() -> None:
@@ -68,7 +53,7 @@ def run_once() -> None:
         log.info("risk_gate_decision", event_id=event.id, decision="HOLD", reason="event has no symbols")
         return
 
-    provider = build_stub_provider()
+    provider = build_claude_provider(config)
     verdict = provider.evaluate(event)
     log.info(
         "llm_verdict",

@@ -36,6 +36,11 @@ Volatility-based position sizing, broker-side bracket stop/take-profit, portfoli
 
 **Status: COMPLETE (2026-06-15).** 76 unit tests passing (`brokebyte/risk/`, `brokebyte/guards/`, `brokebyte/analysis/`). End-to-end paper run confirmed: regime classified from live bars, position sized off ATR, and a broker-side bracket order (market entry + stop-loss + take-profit legs) filled on Alpaca paper. Next up: Phase 3 (real LLM provider behind `LLMProvider`, replacing the stub).
 
+### PHASE 3 — LLM reasoning layer (Haiku -> Sonnet two-tier)
+Real `ClaudeProvider` behind the existing `LLMProvider` interface: Haiku 4.5 materiality filter, Sonnet 4.6 full verdict on survivors, strict-JSON output (`{material, symbol, direction, confidence, time_horizon, reasoning, is_already_priced_in}`) parsed fail-safe-to-HOLD on any error/malformed output. System prompts frame news text as untrusted data (defense-in-depth with Guard 8). Anthropic prompt caching on the static system prompts plus a per-news-ID `VerdictCache`. Wired into `main.py`, replacing `StubLLMProvider`.
+
+**Status: COMPLETE (2026-06-15).** 44 new unit tests passing (120 total: prompts, parsing, cache, two-tier provider with a fake Anthropic client covering short-circuit on non-material, caching, injection pre-filter, and fail-safe-to-HOLD on API errors/malformed JSON). End-to-end paper run confirmed against the live Anthropic API: Haiku correctly classified the hardcoded placeholder event as non-material (single API call, Sonnet skipped), risk gate returned HOLD ("verdict not material"). Next up: Phase 4 (live news ingestion via Alpaca NewsDataStream, replacing the hardcoded signal).
+
 ---
 
 ## FULL TECHNICAL SPEC (source of truth)
