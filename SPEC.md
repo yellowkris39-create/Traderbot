@@ -57,6 +57,32 @@ New `brokebyte/memory/store.py`: a SQLite-backed `DecisionStore` logging every r
 
 **Status: COMPLETE (2026-06-15).** 6 new unit tests passing (145 total): schema creation, round-trip record/recent/count for HOLD-before-confluence, HOLD-with-proposal, and ENTER-with-plan shapes, kill-switch-reason persistence, and ordering. End-to-end paper run confirmed: the non-material hardcoded signal produced one `decisions.db` row with `action=HOLD, reason="verdict not material"` and all proposal/plan columns correctly NULL (gate held before reaching Module 3). Next up: Phase 5b (Track A mechanical backtest harness).
 
+### PHASE 5b — Track A Mechanical Backtest Harness
+
+New `brokebyte/backtest/` package:
+- `costs.py` — `CostModel`: slippage in bps applied against the trader on every fill, plus approximate SEC Section 31 + FINRA TAF sell-side fees (TAF capped per order).
+- `engine.py` — `run_backtest()`: walks daily bars forward with no lookahead. At bar i, `classify_regime(bars[:i+1])` yields Trend.UP/DOWN/CHOPPY; UP/DOWN becomes a synthetic LONG/SHORT verdict run through the *real* `check_confluence` and `size_position` (CHOPPY never has confluence, so no trade — Track A needs *some* mechanical signal to exercise sizing/stops without invoking the LLM, and Module 3's confluence logic is itself rule-based). Entries fill at bar i+1's open with slippage; exits are the first of stop/take-profit (checked against subsequent bars' high/low, stop wins same-bar ties) or end-of-data at the last close.
+- `metrics.py` — `compute_metrics()`: Sortino (preferred) and Sharpe over per-trade returns, max drawdown + recovery-trade count, profit factor, expectancy, win rate, trade count, per Sec 5a; `regime_counts()` for regime-coverage reporting.
+- `walkforward.py` — `run_walkforward()`: splits bars into N sequential non-overlapping windows and runs the *same fixed config* on each — explicitly not a parameter search, per Sec 5's data-snooping warning ("don't try 100 configs and keep the prettiest"). Each window pairs a `BacktestResult` with its `PerformanceMetrics` and `regime_counts`.
+- `run_report.py` — CLI report (`python -m brokebyte.backtest.run_report [SYMBOL] [N_WINDOWS]`): fetches real historical bars via the new `MarketData.get_historical_bars(symbol, start, end)` and prints the walk-forward report.
+
+Scope: single-symbol, one open position at a time. `size_position()`'s own exposure cap is exercised; cross-symbol portfolio checks (`risk/portfolio.py`: max open positions, daily-loss halt, cross-symbol exposure) are out of scope for a single-symbol backtest.
+
+#### Pass criteria (defined up front, per Sec 5's Track A requirement)
+
+Track A validates *mechanics* (sizing, stops, execution, costs/slippage), not the trend-following signal's profitability — the synthetic verdict exists only to drive those mechanics. A walk-forward run (>=3 windows over a multi-year history) passes if, in EVERY window:
+
+1. Every trade's `qty`/`stop_price`/`take_profit_price` come from `size_position()` respecting `RiskLimits` (risk-per-trade and exposure caps) — i.e. no trade bypasses sizing.
+2. Every trade's `exit_reason` is one of `"stop"`, `"take_profit"`, `"end_of_data"` — no position is left in an untracked state.
+3. Costs are nonzero whenever a sell-side fill occurs (slippage applied on every fill; SEC/FINRA fees on sell-side notional) — `expectancy` reflects post-cost P&L, not gross.
+4. `max_drawdown_pct` stays under 25% of starting equity in any window — a sanity bound on the mechanical sizing/stop combination, not a profitability target.
+
+Profitability (Sortino, profit factor, win rate) is explicitly **not** gated at this phase — Track A's job is to prove the harness itself is trustworthy (no lookahead, realistic costs, walk-forward windows, fixed config) so Phase 5c/Track B can layer real promotion thresholds on top of a mechanism that already works. Because the config is fixed (zero parameters tuned to the data), there is nothing to overfit; each window is "out of sample" in the strongest sense.
+
+**Known limitation (documented, not fixed in this phase):** `get_historical_bars` pulls from Alpaca's current symbol universe, so delisted/renamed tickers aren't covered — no survivorship-bias correction yet. The pass criteria above concern mechanics (symbol-agnostic); survivorship bias would matter for a profitability claim, which this phase explicitly does not make.
+
+**Status: COMPLETE (2026-06-15).** 21 new unit tests passing (166 total): cost model (slippage direction, SEC/FINRA fee calc incl. TAF cap), engine (take-profit/stop-loss/end-of-data exits and no-trade-when-too-short, each cross-checked against `size_position`/`atr`/`classify_regime` directly rather than hand-computed magic numbers), metrics (empty/all-win/mixed/never-recovers drawdown cases, regime coverage), and walk-forward (window splitting incl. remainder, labeling, wiring). End-to-end run confirmed against real Alpaca historical data: 750 daily AAPL bars (2023-06-15 to 2026-06-14) split into 4 walk-forward windows, all four pass criteria held in every window (32 total trades; regime coverage spanned UP/DOWN/CHOPPY in every window; max drawdown ranged 0.75%-1.67%, all with recovery tracked). Next up: Phase 5c (§5a success-metrics computation over the `DecisionStore`, reusing this phase's `metrics.py`).
+
 ---
 
 ## FULL TECHNICAL SPEC (source of truth)

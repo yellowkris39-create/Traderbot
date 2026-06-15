@@ -37,6 +37,22 @@ class MarketData:
             return df
         return df.loc[symbol].reset_index(drop=True)
 
+    def get_historical_bars(self, symbol: str, start: datetime, end: datetime) -> pd.DataFrame:
+        """Oldest-first daily bars with `open`, `high`, `low`, `close`,
+        `volume`, and `timestamp` columns over [start, end], for backtesting
+        (brokebyte.backtest)."""
+        request = StockBarsRequest(
+            symbol_or_symbols=symbol,
+            timeframe=TimeFrame.Day,
+            start=start,
+            end=end,
+        )
+        bar_set = self._client.get_stock_bars(request)
+        df = bar_set.df
+        if df.empty:
+            return df
+        return df.loc[symbol].reset_index()
+
     def get_quote(self, symbol: str) -> Quote:
         request = StockLatestQuoteRequest(symbol_or_symbols=symbol)
         quotes = self._client.get_stock_latest_quote(request)
