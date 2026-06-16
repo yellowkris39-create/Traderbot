@@ -7,6 +7,15 @@ unit-tested without any broker or market-data client.
 from __future__ import annotations
 
 from dataclasses import dataclass
+from datetime import datetime
+
+
+@dataclass(frozen=True)
+class FilledOrder:
+    """Exit order fill details returned by the position-monitoring broker query."""
+
+    fill_price: float
+    filled_at: datetime
 
 
 @dataclass(frozen=True)

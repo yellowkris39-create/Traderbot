@@ -94,7 +94,7 @@ def run_once() -> None:
         reason=decision.reason,
         kill_switch_reason=decision.kill_switch_reason,
     )
-    memory.record(event, verdict, decision)
+    decision_id = memory.record(event, verdict, decision)
 
     if decision.kill_switch_reason:
         result = broker.kill_switch(decision.kill_switch_reason)
@@ -118,6 +118,7 @@ def run_once() -> None:
 
     circuit_breaker.record_success()
     circuit_breaker.record_trade()
+    memory.update_order_id(decision_id, str(order.id))
     log.info(
         "order_submitted",
         event_id=event.id,

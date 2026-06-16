@@ -130,7 +130,40 @@ Profitability (Sortino, profit factor, win rate) is explicitly **not** gated at 
 
 **Known limitation (carried forward from 5c):** Nothing yet calls `record_outcome` automatically. The position-monitoring loop that detects closed paper positions and writes outcomes to `DecisionStore` is a future phase. Until then, retrieval and calibration are correctly gated at their sample-size guards and produce no output.
 
-**Status: COMPLETE (2026-06-16).** 26 new unit tests passing (205 total): `retrieve_similar` (empty below threshold, rows at threshold, regime filter, k cap, HOLD/open-ENTER exclusion); `format_similar_setups` (empty string for no rows, structured fields, count in header, None pnl); `compute_calibration` (empty store, by-regime grouping, by-confidence bucket routing, sufficient_data gate, win-rate/mean-pnl math, HOLD exclusion); `build_user_prompt` historical_context variants (block present/absent, placement before analysis instruction); `ClaudeProvider` historical_context propagation (reaches Sonnet user message; absent from Haiku; empty string omits block). End-to-end confirmed: AAPL bars (69 bars) now fetched before the LLM call; retrieval correctly silent (no closed trades yet); Haiku correctly classified hardcoded signal as non-material → HOLD. Next up: position-monitoring loop (calls `DecisionStore.record_outcome` when a paper position closes, to activate the retrieval and calibration layers).
+**Status: COMPLETE (2026-06-16).** 26 new unit tests passing (205 total): `retrieve_similar` (empty below threshold, rows at threshold, regime filter, k cap, HOLD/open-ENTER exclusion); `format_similar_setups` (empty string for no rows, structured fields, count in header, None pnl); `compute_calibration` (empty store, by-regime grouping, by-confidence bucket routing, sufficient_data gate, win-rate/mean-pnl math, HOLD exclusion); `build_user_prompt` historical_context variants (block present/absent, placement before analysis instruction); `ClaudeProvider` historical_context propagation (reaches Sonnet user message; absent from Haiku; empty string omits block). End-to-end confirmed: AAPL bars (69 bars) now fetched before the LLM call; retrieval correctly silent (no closed trades yet); Haiku correctly classified hardcoded signal as non-material → HOLD. Next up: position-monitoring loop.
+
+### PHASE 5e — Position-Monitoring / Broker-Reconciliation Loop
+
+Polls Alpaca for open positions and reconciles them against ENTER decisions in `DecisionStore` that have no recorded outcome. When a position has closed (no longer appears in Alpaca positions), the exit fill is located, P&L is computed, and `record_outcome()` is called — activating Track B's soak metrics, Module 7 retrieval, and the calibration layer.
+
+- **`brokebyte/common.py`** — added `FilledOrder(fill_price, filled_at)` dataclass (shared between `Broker` and the reconciler).
+
+- **`brokebyte/memory/store.py`** additions:
+  - Schema: `broker_order_id TEXT` column (added via `_OUTCOME_COLUMNS` migration). `main.py` writes this after a bracket order is successfully submitted, enabling exact order lookup in a future enhancement.
+  - `open_enter_decisions()` — all ENTER decisions with no recorded outcome (position still open); input to the reconciler.
+  - `update_order_id(decision_id, broker_order_id)` — called by `main.py` after order submission to correlate a `DecisionStore` row with its Alpaca order ID.
+
+- **`brokebyte/execution/broker.py`** additions:
+  - `get_position_symbols()` — set of symbols with an open Alpaca position (wraps existing `get_positions()`).
+  - `get_filled_exit_order(symbol, after, plan_side)` — queries Alpaca for the most recent filled exit order for a symbol since the entry decision date. Checks both top-level orders and nested bracket legs. Returns `FilledOrder | None`.
+
+- **`brokebyte/main.py`** — `memory.record()` return value now captured as `decision_id`; `memory.update_order_id(decision_id, str(order.id))` called after successful bracket submission.
+
+- **`brokebyte/monitor/reconcile.py`** (new):
+  - `PositionBrokerLike` Protocol — testable broker interface (structural subtyping; `Broker` satisfies it without importing this module).
+  - `_infer_exit_reason(fill_price, stop_price, take_profit_price)` — picks stop vs. take_profit by comparing the fill to both plan prices (closest wins; distance-comparison works for both long and short).
+  - `_compute_pnl(entry_price, exit_price, qty, plan_side)` — direction-aware P&L.
+  - `reconcile_open_positions(broker, store, log)` — main reconciliation body: gets open decisions, compares against current positions, records outcomes for any that closed. Returns `list[OutcomeRecord]`. Idempotent: a no-op when nothing has closed.
+
+- **`brokebyte/monitor/__main__.py`** (new) — CLI runner:
+  ```
+  venv\Scripts\python.exe -m brokebyte.monitor [DB_PATH]
+  ```
+  Connects to Alpaca, reconciles, prints a summary. Schedule with Task Scheduler / cron during the soak.
+
+**Known limitation:** reconciliation is symbol-based, not order-ID-based. If two ENTER decisions are open for the same symbol simultaneously (prevented by portfolio limits, but possible in edge cases), both receive the same exit fill. The `broker_order_id` column is stored for a future enhancement that looks up exact bracket order legs.
+
+**Status: COMPLETE (2026-06-16).** 22 new unit tests passing (227 total): `_infer_exit_reason` (take_profit, stop, equidistant tie, short variants); `_compute_pnl` (long/short profit/loss); `reconcile_open_positions` (empty store, HOLD exclusion, position still open, take-profit close, stop close, outcome written to store, missing exit order handled gracefully, multiple decisions same symbol, pre-closed decisions skipped, short position); `DecisionStore.open_enter_decisions` and `update_order_id`. End-to-end main.py confirmed unchanged (HOLD path; `decision_id` captured, `update_order_id` skipped as expected for HOLD). Next up: Phase 6 — extended paper soak + review (per build order §6).
 
 ---
 

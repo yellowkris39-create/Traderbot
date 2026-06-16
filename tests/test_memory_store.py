@@ -297,3 +297,41 @@ def test_migration_adds_outcome_columns_to_old_schema(tmp_path):
 
     store.record_outcome(row["id"], exit_price=100.0, exit_reason="stop", pnl=-10.0)
     assert store.closed_trade_pnls() == [-10.0]
+
+
+def test_open_enter_decisions_returns_only_enters_with_no_outcome(tmp_path):
+    store = DecisionStore(tmp_path / "decisions.db")
+    event = make_event()
+    verdict = make_verdict(direction=Direction.LONG)
+
+    id1 = store.record(event, verdict, GateDecision(plan=make_plan(), reason="enter 1"))
+    store.record(event, verdict, GateDecision(plan=None, reason="hold"))  # HOLD — excluded
+    id3 = store.record(event, verdict, GateDecision(plan=make_plan(), reason="enter 2"))
+
+    # Close the first enter
+    store.record_outcome(id1, exit_price=108.0, exit_reason="take_profit", pnl=80.0)
+
+    open_rows = store.open_enter_decisions()
+
+    assert len(open_rows) == 1
+    assert open_rows[0]["id"] == id3
+
+
+def test_update_order_id_persists_broker_order_id(tmp_path):
+    store = DecisionStore(tmp_path / "decisions.db")
+    event = make_event()
+    verdict = make_verdict(direction=Direction.LONG)
+    decision = GateDecision(plan=make_plan(), reason="entry approved")
+    row_id = store.record(event, verdict, decision)
+
+    store.update_order_id(row_id, "abc-broker-order-123")
+
+    row = store.recent(1)[0]
+    assert row["broker_order_id"] == "abc-broker-order-123"
+
+
+def test_update_order_id_unknown_id_raises(tmp_path):
+    store = DecisionStore(tmp_path / "decisions.db")
+
+    with pytest.raises(ValueError):
+        store.update_order_id(999, "some-order-id")

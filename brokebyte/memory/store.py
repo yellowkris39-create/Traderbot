@@ -60,6 +60,7 @@ CREATE TABLE IF NOT EXISTS decisions (
     plan_take_profit_price REAL,
     plan_risk_amount REAL,
     plan_notional REAL,
+    broker_order_id TEXT,
     exit_price REAL,
     exit_reason TEXT,
     pnl REAL,
@@ -71,6 +72,7 @@ CREATE TABLE IF NOT EXISTS decisions (
 # onto pre-existing decisions.db files in _migrate so accumulated history
 # isn't lost when the schema grows.
 _OUTCOME_COLUMNS = {
+    "broker_order_id": "TEXT",
     "exit_price": "REAL",
     "exit_reason": "TEXT",
     "pnl": "REAL",
@@ -252,5 +254,32 @@ class DecisionStore:
                 "SELECT * FROM decisions WHERE action='ENTER' AND pnl IS NOT NULL ORDER BY id"
             )
             return cursor.fetchall()
+        finally:
+            conn.close()
+
+    def open_enter_decisions(self) -> list[sqlite3.Row]:
+        """All ENTER decisions with no recorded outcome yet (position still open).
+        Used by brokebyte.monitor.reconcile to find positions to reconcile."""
+        conn = self._connect()
+        try:
+            cursor = conn.execute(
+                "SELECT * FROM decisions WHERE action='ENTER' AND pnl IS NULL ORDER BY id"
+            )
+            return cursor.fetchall()
+        finally:
+            conn.close()
+
+    def update_order_id(self, decision_id: int, broker_order_id: str) -> None:
+        """Record the Alpaca order ID for an ENTER decision after the bracket
+        order is successfully submitted. Used by main.py and the monitor."""
+        conn = self._connect()
+        try:
+            cursor = conn.execute(
+                "UPDATE decisions SET broker_order_id = ? WHERE id = ?",
+                (broker_order_id, decision_id),
+            )
+            conn.commit()
+            if cursor.rowcount == 0:
+                raise ValueError(f"no decision with id={decision_id}")
         finally:
             conn.close()
