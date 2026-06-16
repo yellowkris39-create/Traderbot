@@ -77,3 +77,33 @@ def test_user_prompt_handles_no_tagged_symbols():
     prompt = build_user_prompt(event)
 
     assert "(none tagged)" in prompt
+
+
+def test_user_prompt_with_historical_context_includes_block():
+    event = make_event()
+    ctx = "Past setups in the same market regime (3 most recent closed trades):\n  1. ..."
+
+    prompt = build_user_prompt(event, historical_context=ctx)
+
+    assert "<historical_context>" in prompt
+    assert ctx in prompt
+    assert "</historical_context>" in prompt
+
+
+def test_user_prompt_without_historical_context_has_no_block():
+    event = make_event()
+
+    prompt = build_user_prompt(event)
+
+    assert "<historical_context>" not in prompt
+
+
+def test_user_prompt_historical_context_placed_before_analysis_instruction():
+    event = make_event()
+    ctx = "some context"
+
+    prompt = build_user_prompt(event, historical_context=ctx)
+
+    ctx_pos = prompt.index("<historical_context>")
+    instruction_pos = prompt.index("Analyze the news_item")
+    assert ctx_pos < instruction_pos

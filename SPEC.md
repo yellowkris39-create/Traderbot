@@ -50,7 +50,7 @@ Phase 5 bundles three large, fairly independent subsystems. As with prior phases
 - **5a** — Trade/decision memory store (Module 7's storage layer; below).
 - **5b** — Track A: mechanical backtest harness (walk-forward, costs/slippage, pass criteria).
 - **5c** — §5a success-metrics computation (Sortino, max drawdown, profit factor, expectancy, win rate) over the memory store, for both Track A's report and Track B's soak.
-- **5d** — Module 7 retrieval (RAG/embeddings) + calibration layers (new deps; gated on having enough recorded decisions to be meaningful).
+- **5d** — Module 7 retrieval + calibration layers (gated on having enough recorded decisions to be meaningful). **COMPLETE (2026-06-16).**
 
 ### PHASE 5a — Trade/Decision Memory Store (Module 7 storage layer)
 New `brokebyte/memory/store.py`: a SQLite-backed `DecisionStore` logging every risk-gate decision (ENTER or HOLD, including rejections) with full decision-time context — the news event, LLM verdict, fused `TradeProposal` (regime/support/resistance, when Module 3 was reached), and the outcome (action, reason, kill-switch reason, and sizing if entered). `GateDecision` gained a `proposal: TradeProposal | None` field (populated from step 6 onward) so this context is available to record. Wired into `main.py`: one row per evaluated event, written to `logs/decisions.db`.
@@ -96,7 +96,41 @@ Profitability (Sortino, profit factor, win rate) is explicitly **not** gated at 
 
 **Known limitation (documented, not fixed in this phase):** nothing yet calls `record_outcome` automatically. Detecting that a paper position has closed (polling the broker / a position-monitoring loop) is a future phase — until then, `brokebyte.memory.run_report` correctly reports "0 with closed-trade outcomes" and an INSUFFICIENT DATA promotion status. "What-if" outcomes for HOLD decisions (Module 7's "trades not taken") are also deferred to that future phase.
 
-**Status: COMPLETE (2026-06-15).** 13 new unit tests passing (179 total): `compute_metrics`/walk-forward tests updated for the `list[float]` signature; `evaluate_promotion` covers insufficient-trades, insufficient-regime-coverage, all-thresholds-pass, negative-expectancy-fails, excess-drawdown-fails, and custom-threshold cases; `DecisionStore` covers `record_outcome` (incl. unknown-id error), `closed_trade_pnls` ordering/filtering, `regime_coverage` tallying, and schema migration from a pre-5c `decisions.db`; `memory/metrics.py` cross-checked against `compute_metrics` directly. End-to-end: `python -m brokebyte.memory.run_report` against the real `logs/decisions.db` (1 HOLD row, no outcomes) correctly reports INSUFFICIENT DATA; a synthetic sqlite DB with 2 closed trades + regime coverage produced correct `PerformanceMetrics` and promotion output. Next up: Phase 5d (Module 7 retrieval/embeddings + calibration layers).
+**Status: COMPLETE (2026-06-15).** 13 new unit tests passing (179 total): `compute_metrics`/walk-forward tests updated for the `list[float]` signature; `evaluate_promotion` covers insufficient-trades, insufficient-regime-coverage, all-thresholds-pass, negative-expectancy-fails, excess-drawdown-fails, and custom-threshold cases; `DecisionStore` covers `record_outcome` (incl. unknown-id error), `closed_trade_pnls` ordering/filtering, `regime_coverage` tallying, and schema migration from a pre-5c `decisions.db`; `memory/metrics.py` cross-checked against `compute_metrics` directly. End-to-end: `python -m brokebyte.memory.run_report` against the real `logs/decisions.db` (1 HOLD row, no outcomes) correctly reports INSUFFICIENT DATA; a synthetic sqlite DB with 2 closed trades + regime coverage produced correct `PerformanceMetrics` and promotion output. Next up: Phase 5d (Module 7 retrieval + calibration layers).
+
+### PHASE 5d — Module 7 Retrieval + Calibration Layers
+
+- **Retrieval approach:** Structured SQL similarity rather than NLP embeddings (SPEC says "e.g. FAISS / Chroma", not mandated). "Similarity" for a trading setup is structural — same market regime, same directional context — not semantic proximity of headline text. The LLM has already distilled each news event's meaning into structured fields (direction, confidence); regime + those fields identify "similar conditions" more directly than cosine distance over raw headline embeddings would. No new dependencies; fully interpretable. A future upgrade to dense embeddings is possible if soak data shows structural matching is insufficient.
+
+- `brokebyte/memory/store.py` gained two new read methods:
+  - `query_similar(regime_trend, k)` — returns up to k closed ENTER decisions matching the given regime, newest first. Raw DB query used by the retrieval layer.
+  - `closed_enter_decisions()` — all closed ENTER decisions with recorded outcomes, oldest first. Used by the calibration layer.
+
+- New `brokebyte/memory/retrieval.py`:
+  - `retrieve_similar(store, regime_trend, k=5)` — guarded by `MIN_RETRIEVAL_SAMPLE=5`: returns `[]` if fewer than 5 closed trades exist (no stale or vacuous context injected until there is meaningful history).
+  - `format_similar_setups(rows)` — converts rows to a plain-text block for injection into the LLM verdict prompt. Only structured bot-generated fields (date, direction, regime, confidence, outcome) are included — raw headline text from past events is intentionally excluded to avoid re-injecting potentially crafted input.
+
+- New `brokebyte/memory/calibration.py`:
+  - `compute_calibration(store)` — hit-rate statistics by regime (up/down/choppy) and by confidence bucket ([0.0-0.5, 0.5-0.7, 0.7-0.85, 0.85-1.0]). `MIN_CALIBRATION_SAMPLE=10` per bucket. **Advisory only** per SPEC Module 7: "parameter changes proposed by the calibration layer are human-approved until late autonomy rungs." Results surfaced via `memory/run_report.py`; nothing is automatically changed in `RiskLimits` or the gate's sizing logic.
+
+- `brokebyte/llm/prompts.py` (`build_user_prompt`) — gained `historical_context: str = ""` parameter. When non-empty, a `<historical_context>` block is appended in the *user* turn (not the system prompt, to preserve system-prompt prompt-caching across calls with different histories).
+
+- `brokebyte/llm/provider.py` and `brokebyte/llm/claude_provider.py` — `evaluate()` signatures updated to propagate `historical_context` through to `_call_verdict`; `StubLLMProvider.evaluate` accepts and ignores it (correct: stubs don't vary by context).
+
+- `brokebyte/main.py` — reordered so `get_daily_bars(symbol)` and `get_quote(symbol)` are fetched *before* the verdict call (previously they were after). This makes the current regime available before the LLM call. Wiring:
+  ```
+  regime = classify_regime(bars)
+  similar_rows = retrieve_similar(memory, regime.trend.value, k=5)
+  historical_context = format_similar_setups(similar_rows)
+  verdict = provider.evaluate(event, historical_context=historical_context)
+  ```
+  When `similar_rows` is empty (below `MIN_RETRIEVAL_SAMPLE`), `historical_context=""` and the LLM prompt is unchanged from Phase 5c.
+
+- `brokebyte/memory/run_report.py` — extended with a calibration output section below the promotion check: per-regime and per-confidence-bucket stats with `[low data]` flags for buckets below `MIN_CALIBRATION_SAMPLE`.
+
+**Known limitation (carried forward from 5c):** Nothing yet calls `record_outcome` automatically. The position-monitoring loop that detects closed paper positions and writes outcomes to `DecisionStore` is a future phase. Until then, retrieval and calibration are correctly gated at their sample-size guards and produce no output.
+
+**Status: COMPLETE (2026-06-16).** 26 new unit tests passing (205 total): `retrieve_similar` (empty below threshold, rows at threshold, regime filter, k cap, HOLD/open-ENTER exclusion); `format_similar_setups` (empty string for no rows, structured fields, count in header, None pnl); `compute_calibration` (empty store, by-regime grouping, by-confidence bucket routing, sufficient_data gate, win-rate/mean-pnl math, HOLD exclusion); `build_user_prompt` historical_context variants (block present/absent, placement before analysis instruction); `ClaudeProvider` historical_context propagation (reaches Sonnet user message; absent from Haiku; empty string omits block). End-to-end confirmed: AAPL bars (69 bars) now fetched before the LLM call; retrieval correctly silent (no closed trades yet); Haiku correctly classified hardcoded signal as non-material → HOLD. Next up: position-monitoring loop (calls `DecisionStore.record_outcome` when a paper position closes, to activate the retrieval and calibration layers).
 
 ---
 

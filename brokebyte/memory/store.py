@@ -227,3 +227,30 @@ class DecisionStore:
             return counts
         finally:
             conn.close()
+
+    def query_similar(self, regime_trend: str, k: int = 5) -> list[sqlite3.Row]:
+        """Return up to k closed ENTER decisions matching `regime_trend`,
+        newest first. Raw DB query used by brokebyte.memory.retrieval."""
+        conn = self._connect()
+        try:
+            cursor = conn.execute(
+                "SELECT * FROM decisions "
+                "WHERE action='ENTER' AND pnl IS NOT NULL AND regime_trend=? "
+                "ORDER BY id DESC LIMIT ?",
+                (regime_trend, k),
+            )
+            return cursor.fetchall()
+        finally:
+            conn.close()
+
+    def closed_enter_decisions(self) -> list[sqlite3.Row]:
+        """All closed ENTER decisions with recorded outcomes, oldest first.
+        Used by brokebyte.memory.calibration."""
+        conn = self._connect()
+        try:
+            cursor = conn.execute(
+                "SELECT * FROM decisions WHERE action='ENTER' AND pnl IS NOT NULL ORDER BY id"
+            )
+            return cursor.fetchall()
+        finally:
+            conn.close()

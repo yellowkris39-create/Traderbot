@@ -254,3 +254,38 @@ def test_build_claude_provider_with_api_key_returns_claude_provider():
     provider = build_claude_provider(config)
 
     assert isinstance(provider, ClaudeProvider)
+
+
+# --- historical_context propagation -------------------------------------------
+
+
+def test_historical_context_appears_in_sonnet_user_message():
+    provider, client = make_provider([MATERIAL_TRUE, VERDICT_LONG])
+    ctx = "Past setups in the same market regime (2 most recent closed trades):\n  1. test"
+
+    provider.evaluate(make_event(), historical_context=ctx)
+
+    sonnet_call = client.messages.calls[1]
+    user_content = sonnet_call["messages"][0]["content"]
+    assert ctx in user_content
+
+
+def test_historical_context_not_in_haiku_user_message():
+    provider, client = make_provider([MATERIAL_TRUE, VERDICT_LONG])
+    ctx = "Past setups context"
+
+    provider.evaluate(make_event(), historical_context=ctx)
+
+    haiku_call = client.messages.calls[0]
+    user_content = haiku_call["messages"][0]["content"]
+    assert ctx not in user_content
+
+
+def test_empty_historical_context_does_not_inject_block():
+    provider, client = make_provider([MATERIAL_TRUE, VERDICT_LONG])
+
+    provider.evaluate(make_event(), historical_context="")
+
+    sonnet_call = client.messages.calls[1]
+    user_content = sonnet_call["messages"][0]["content"]
+    assert "<historical_context>" not in user_content

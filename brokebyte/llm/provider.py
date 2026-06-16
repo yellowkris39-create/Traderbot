@@ -45,8 +45,12 @@ class LLMProvider(ABC):
     """Provider-agnostic interface for the LLM reasoning stage."""
 
     @abstractmethod
-    def evaluate(self, event: NewsEvent) -> LLMVerdict:
-        """Return a structured verdict for a single news event."""
+    def evaluate(self, event: NewsEvent, historical_context: str = "") -> LLMVerdict:
+        """Return a structured verdict for a single news event.
+
+        `historical_context` is an optional block of bot-generated text from
+        Module 7's retrieval layer (Phase 5d) summarising similar past setups.
+        Providers that don't support context injection may ignore it."""
 
 
 class StubLLMProvider(LLMProvider):
@@ -60,5 +64,5 @@ class StubLLMProvider(LLMProvider):
     def __init__(self, verdict: LLMVerdict) -> None:
         self._verdict = verdict
 
-    def evaluate(self, event: NewsEvent) -> LLMVerdict:
+    def evaluate(self, event: NewsEvent, historical_context: str = "") -> LLMVerdict:
         return self._verdict

@@ -15,9 +15,11 @@ from brokebyte.config import load_config
 from brokebyte.execution.broker import Broker
 from brokebyte.execution.market_data import MarketData
 from brokebyte.guards.circuit_breakers import CircuitBreaker
+from brokebyte.guards.regime import classify_regime
 from brokebyte.ingestion.events import hardcoded_signal
 from brokebyte.llm.claude_provider import build_claude_provider
 from brokebyte.logging_setup import configure_logging, get_logger
+from brokebyte.memory.retrieval import format_similar_setups, retrieve_similar
 from brokebyte.memory.store import DecisionStore
 from brokebyte.risk import gate
 from brokebyte.risk import portfolio as portfolio_module
@@ -55,8 +57,23 @@ def run_once() -> None:
         log.info("risk_gate_decision", event_id=event.id, decision="HOLD", reason="event has no symbols")
         return
 
+    # Fetch market data before the verdict call so the current regime is
+    # available for Module 7's retrieval layer (Phase 5d).
+    symbol = event.symbols[0]
+    bars = market_data.get_daily_bars(symbol)
+    quote = market_data.get_quote(symbol)
+    log.info("market_data", symbol=symbol, bar_count=len(bars), bid=quote.bid_price, ask=quote.ask_price)
+
+    # Module 7 retrieval: fetch similar past setups (guarded by MIN_RETRIEVAL_SAMPLE;
+    # returns [] and injects no context when there is insufficient history).
+    regime = classify_regime(bars)
+    similar_rows = retrieve_similar(memory, regime.trend.value, k=5)
+    historical_context = format_similar_setups(similar_rows)
+    if historical_context:
+        log.info("retrieval_context", regime=regime.trend.value, similar_count=len(similar_rows))
+
     provider = build_claude_provider(config)
-    verdict = provider.evaluate(event)
+    verdict = provider.evaluate(event, historical_context=historical_context)
     log.info(
         "llm_verdict",
         event_id=event.id,
@@ -68,11 +85,6 @@ def run_once() -> None:
         is_already_priced_in=verdict.is_already_priced_in,
         reasoning=verdict.reasoning,
     )
-
-    symbol = event.symbols[0]
-    bars = market_data.get_daily_bars(symbol)
-    quote = market_data.get_quote(symbol)
-    log.info("market_data", symbol=symbol, bar_count=len(bars), bid=quote.bid_price, ask=quote.ask_price)
 
     decision = gate.evaluate(verdict, event, bars, quote, portfolio, limits, circuit_breaker)
     log.info(

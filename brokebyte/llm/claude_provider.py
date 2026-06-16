@@ -55,7 +55,7 @@ class ClaudeProvider(LLMProvider):
         self._cache: VerdictCache = cache if cache is not None else InMemoryVerdictCache()
         self._max_tokens = max_tokens
 
-    def evaluate(self, event: NewsEvent) -> LLMVerdict:
+    def evaluate(self, event: NewsEvent, historical_context: str = "") -> LLMVerdict:
         cached = self._cache.get(event.id)
         if cached is not None:
             return cached
@@ -66,11 +66,11 @@ class ClaudeProvider(LLMProvider):
             self._cache.set(event.id, verdict)
             return verdict
 
-        verdict = self._evaluate_uncached(event)
+        verdict = self._evaluate_uncached(event, historical_context)
         self._cache.set(event.id, verdict)
         return verdict
 
-    def _evaluate_uncached(self, event: NewsEvent) -> LLMVerdict:
+    def _evaluate_uncached(self, event: NewsEvent, historical_context: str = "") -> LLMVerdict:
         try:
             materiality = self._call_materiality(event)
         except Exception as exc:  # noqa: BLE001 - external API call, fail safe
@@ -88,7 +88,7 @@ class ClaudeProvider(LLMProvider):
             )
 
         try:
-            return self._call_verdict(event)
+            return self._call_verdict(event, historical_context)
         except Exception as exc:  # noqa: BLE001 - external API call, fail safe
             return hold_verdict(f"verdict call failed: {exc!r}")
 
@@ -101,12 +101,12 @@ class ClaudeProvider(LLMProvider):
         )
         return parse_materiality(response.content[0].text)
 
-    def _call_verdict(self, event: NewsEvent) -> LLMVerdict:
+    def _call_verdict(self, event: NewsEvent, historical_context: str = "") -> LLMVerdict:
         response = self._client.messages.create(
             model=self._sonnet_model,
             max_tokens=self._max_tokens,
             system=[{"type": "text", "text": VERDICT_SYSTEM_PROMPT, "cache_control": {"type": "ephemeral"}}],
-            messages=[{"role": "user", "content": build_user_prompt(event)}],
+            messages=[{"role": "user", "content": build_user_prompt(event, historical_context)}],
         )
         return parse_verdict(response.content[0].text)
 

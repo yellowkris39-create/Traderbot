@@ -52,14 +52,25 @@ Respond with ONLY a JSON object (no markdown fences, no prose) matching exactly 
 Use "none" for direction/time_horizon and a low confidence when the implication is unclear or the story doesn't justify a position. "swing" means days to weeks; "intraday" means the move is likely to play out same-day."""
 
 
-def build_user_prompt(event: NewsEvent) -> str:
-    """Wraps the news event in an explicit untrusted-data envelope."""
+def build_user_prompt(event: NewsEvent, historical_context: str = "") -> str:
+    """Wraps the news event in an explicit untrusted-data envelope.
+
+    When `historical_context` is non-empty (Module 7 retrieval layer,
+    Phase 5d), a <historical_context> block is appended between the news
+    item and the analysis instruction so the LLM can weigh past setups.
+    This goes in the *user* turn (not the system prompt) to preserve
+    system-prompt caching.  The context string must contain only
+    bot-generated structured data -- never raw text from external sources.
+    """
     symbols = ", ".join(event.symbols) if event.symbols else "(none tagged)"
-    return (
+    body = (
         f'<news_item id="{event.id}" source="{event.source}" created_at="{event.created_at.isoformat()}">\n'
         f"<tagged_symbols>{symbols}</tagged_symbols>\n"
         f"<headline>{event.headline}</headline>\n"
         f"<summary>{event.summary}</summary>\n"
         f"</news_item>\n\n"
-        "Analyze the news_item above per your instructions and respond with JSON only."
     )
+    if historical_context:
+        body += f"<historical_context>\n{historical_context}\n</historical_context>\n\n"
+    body += "Analyze the news_item above per your instructions and respond with JSON only."
+    return body

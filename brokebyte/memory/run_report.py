@@ -15,6 +15,7 @@ from __future__ import annotations
 import sys
 
 from brokebyte.backtest.metrics import DEFAULT_THRESHOLDS, evaluate_promotion
+from brokebyte.memory.calibration import MIN_CALIBRATION_SAMPLE, compute_calibration
 from brokebyte.memory.metrics import compute_decision_store_metrics
 from brokebyte.memory.store import DecisionStore
 
@@ -43,6 +44,24 @@ def main(db_path: str = "logs/decisions.db") -> None:
         print("  status: FAIL")
     for failure in check.failures:
         print(f"  - {failure}")
+
+    cal = compute_calibration(store)
+    print(f"\nModule 7 calibration (advisory, min sample={MIN_CALIBRATION_SAMPLE} per bucket):")
+    if not cal.sufficient_data:
+        print("  status: INSUFFICIENT DATA (no bucket has reached min sample)")
+    else:
+        print("  status: data available")
+    if cal.by_regime:
+        print("  by regime:")
+        for regime, stats in cal.by_regime.items():
+            flag = "" if stats.count >= MIN_CALIBRATION_SAMPLE else " [low data]"
+            print(f"    {regime}: n={stats.count} win_rate={stats.win_rate:.2%} mean_pnl=${stats.mean_pnl:.2f}{flag}")
+    else:
+        print("  by regime: (no closed ENTER decisions yet)")
+    print("  by confidence bucket:")
+    for bucket, stats in cal.by_confidence.items():
+        flag = "" if stats.count >= MIN_CALIBRATION_SAMPLE else " [low data]"
+        print(f"    {bucket}: n={stats.count} win_rate={stats.win_rate:.2%} mean_pnl=${stats.mean_pnl:.2f}{flag}")
 
 
 if __name__ == "__main__":
