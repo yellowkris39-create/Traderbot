@@ -163,7 +163,31 @@ Polls Alpaca for open positions and reconciles them against ENTER decisions in `
 
 **Known limitation:** reconciliation is symbol-based, not order-ID-based. If two ENTER decisions are open for the same symbol simultaneously (prevented by portfolio limits, but possible in edge cases), both receive the same exit fill. The `broker_order_id` column is stored for a future enhancement that looks up exact bracket order legs.
 
-**Status: COMPLETE (2026-06-16).** 22 new unit tests passing (227 total): `_infer_exit_reason` (take_profit, stop, equidistant tie, short variants); `_compute_pnl` (long/short profit/loss); `reconcile_open_positions` (empty store, HOLD exclusion, position still open, take-profit close, stop close, outcome written to store, missing exit order handled gracefully, multiple decisions same symbol, pre-closed decisions skipped, short position); `DecisionStore.open_enter_decisions` and `update_order_id`. End-to-end main.py confirmed unchanged (HOLD path; `decision_id` captured, `update_order_id` skipped as expected for HOLD). Next up: Phase 6 — extended paper soak + review (per build order §6).
+**Status: COMPLETE (2026-06-16).** 22 new unit tests passing (227 total): `_infer_exit_reason` (take_profit, stop, equidistant tie, short variants); `_compute_pnl` (long/short profit/loss); `reconcile_open_positions` (empty store, HOLD exclusion, position still open, take-profit close, stop close, outcome written to store, missing exit order handled gracefully, multiple decisions same symbol, pre-closed decisions skipped, short position); `DecisionStore.open_enter_decisions` and `update_order_id`. End-to-end main.py confirmed unchanged (HOLD path; `decision_id` captured, `update_order_id` skipped as expected for HOLD). Next up: Phase 6 — live news ingestion + continuous loop.
+
+### PHASE 6 — Live News Ingestion + Continuous Loop
+
+Replaces the hardcoded placeholder signal with real-time news from Alpaca's `NewsDataStream` websocket and converts `main.py` from a one-shot script to a continuous event-processing daemon.
+
+- **`brokebyte/ingestion/events.py`** — added `from_alpaca_news(news: News) -> NewsEvent` factory that maps Alpaca's `News` model (int `id`, `headline`, `summary`, `symbols`, `source`, `created_at`) to the normalized `NewsEvent`. All downstream pipeline stages remain unchanged.
+
+- **`brokebyte/ingestion/dedup.py`** (new) — `EventDeduplicator`: rolling-window deduplication keyed on `NewsEvent.id`. Alpaca assigns a unique integer ID per article; this suppresses duplicate websocket deliveries across reconnects. Default window: 5 minutes; expired entries evicted automatically. No cross-source headline clustering (future enhancement if soak data shows same story arriving under multiple IDs).
+
+- **`brokebyte/ingestion/stream.py`** (new) — `NewsStream`: wraps `NewsDataStream` in a background daemon thread (Alpaca's `run()` is blocking), bridges events to the main thread via a `queue.Queue(maxsize=200)`. Handler is async (required by alpaca-py); queue bridges to the synchronous pipeline. Subscribes to `"*"` (all symbols) and lets the Haiku materiality filter decide what's worth forwarding. Call `stream.start()` to launch the thread; `stream.stop()` for graceful shutdown.
+
+- **`brokebyte/main.py`** refactored:
+  - `_setup()` — extracts all shared resource initialization (config, logging, broker, market_data, provider, circuit_breaker, memory, account summary log). Called once at startup.
+  - `_process_event(event, ...)` — the full single-event pipeline (portfolio snapshot → bars/quote → regime → retrieval → LLM → risk gate → record → order). Extracted from the old inline `run_once()` body.
+  - `run_once()` — one-shot mode: setup + hardcoded signal + `_process_event()`. Still works for development/smoke-tests. Invoked with `--once`.
+  - `run_stream()` — continuous mode: setup + `NewsStream.start()` + polling loop. Calls `reconcile_open_positions()` every `RECONCILE_INTERVAL_SECONDS=300`. Per-event exceptions are caught and logged (one bad event never kills the loop). Exits cleanly on Ctrl-C.
+  - Entry point: `--once` flag → `run_once()`; default → `run_stream()`.
+
+  ```
+  venv\Scripts\python.exe -m brokebyte.main         # stream mode (soak)
+  venv\Scripts\python.exe -m brokebyte.main --once  # one-shot (testing)
+  ```
+
+**Status: COMPLETE (2026-06-16).** 19 new unit tests passing (246 total): `EventDeduplicator` (first occurrence accepted, same ID duplicate, different IDs pass, window eviction, within-window still duplicate, seen_count tracking); `from_alpaca_news` (int-to-str ID, all field mappings, empty symbols, None summary/source/created_at fallbacks). End-to-end: `python -m brokebyte.main --once` confirmed identical behaviour to the previous `run_once()`. Next up: Phase 7 (live promotion ladder) — only after Phase 5 validation gates pass during the extended soak.
 
 ---
 
