@@ -283,3 +283,20 @@ class DecisionStore:
                 raise ValueError(f"no decision with id={decision_id}")
         finally:
             conn.close()
+
+    def mark_not_executed(self, decision_id: int, reason: str) -> None:
+        """Downgrade a persisted ENTER decision to HOLD when its bracket order
+        was not actually submitted (e.g. submission failed).  Clears it from
+        the open-ENTER set so the reconciler never treats it as an open
+        position it can never close."""
+        conn = self._connect()
+        try:
+            cursor = conn.execute(
+                "UPDATE decisions SET action = 'HOLD', reason = ? WHERE id = ?",
+                (reason, decision_id),
+            )
+            conn.commit()
+            if cursor.rowcount == 0:
+                raise ValueError(f"no decision with id={decision_id}")
+        finally:
+            conn.close()

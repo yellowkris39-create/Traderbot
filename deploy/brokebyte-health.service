@@ -1,0 +1,9 @@
+[Unit]
+Description=BrokeByte health report (one-shot)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+WorkingDirectory=/root/Trader
+ExecStart=/root/Trader/venv/bin/python /root/Trader/health_report.py

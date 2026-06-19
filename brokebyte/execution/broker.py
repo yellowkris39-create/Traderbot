@@ -40,7 +40,13 @@ class Broker:
             "last_equity": account.last_equity,
             "portfolio_value": account.portfolio_value,
             "buying_power": account.buying_power,
+            "shorting_enabled": bool(getattr(account, "shorting_enabled", True)),
         }
+
+    def is_market_open(self) -> bool:
+        """Return True if the US stock market is currently open for trading."""
+        clock = self._client.get_clock()
+        return bool(clock.is_open)
 
     def get_positions(self) -> list[dict]:
         positions = self._client.get_all_positions()
@@ -58,6 +64,31 @@ class Broker:
     def get_position_symbols(self) -> set[str]:
         """Symbols of currently open positions."""
         return {p["symbol"] for p in self.get_positions()}
+
+    def get_order_exit_fill(self, order_id: str) -> FilledOrder | None:
+        """Return the filled exit leg of a bracket order, or None if not yet filled."""
+        try:
+            order = self._client.get_order_by_id(order_id, nested=True)
+        except Exception:
+            return None
+
+        if not order.legs:
+            return None
+
+        entry_side = order.side
+        exit_side = OrderSide.SELL if entry_side == OrderSide.BUY else OrderSide.BUY
+
+        for leg in order.legs:
+            if (
+                leg.side == exit_side
+                and leg.status == OrderStatus.FILLED
+                and leg.filled_avg_price is not None
+            ):
+                return FilledOrder(
+                    fill_price=float(leg.filled_avg_price),
+                    filled_at=leg.filled_at,
+                )
+        return None
 
     def get_filled_exit_order(
         self, symbol: str, after: datetime, plan_side: str

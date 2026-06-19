@@ -33,9 +33,11 @@ class FakeBroker:
         self,
         open_symbols: set[str],
         exit_orders: dict[str, FilledOrder | None],
+        order_exit_fills: dict[str, FilledOrder | None] | None = None,
     ) -> None:
         self._open_symbols = open_symbols
         self._exit_orders = exit_orders
+        self._order_exit_fills = order_exit_fills or {}
 
     def get_position_symbols(self) -> set[str]:
         return self._open_symbols
@@ -44,6 +46,9 @@ class FakeBroker:
         self, symbol: str, after: datetime, plan_side: str
     ) -> FilledOrder | None:
         return self._exit_orders.get(symbol)
+
+    def get_order_exit_fill(self, order_id: str) -> FilledOrder | None:
+        return self._order_exit_fills.get(order_id)
 
 
 # ---------------------------------------------------------------------------
@@ -97,7 +102,7 @@ def make_proposal(trend: Trend = Trend.UP):
     )
 
 
-def seed_open_enter(store: DecisionStore, **overrides) -> int:
+def seed_open_enter(store: DecisionStore, broker_order_id: str | None = None, **overrides) -> int:
     """Insert an ENTER decision with no outcome. Returns decision_id."""
     plan_overrides = {k: v for k, v in overrides.items()
                       if k in ("symbol", "side", "qty", "entry_price",
@@ -107,7 +112,10 @@ def seed_open_enter(store: DecisionStore, **overrides) -> int:
     verdict = make_verdict(**verdict_overrides)
     proposal = make_proposal()
     decision = GateDecision(plan=plan, reason="enter", proposal=proposal)
-    return store.record(make_event(), verdict, decision)
+    decision_id = store.record(make_event(), verdict, decision)
+    if broker_order_id:
+        store.update_order_id(decision_id, broker_order_id)
+    return decision_id
 
 
 # ---------------------------------------------------------------------------
@@ -253,7 +261,8 @@ def test_reconcile_handles_missing_exit_order(tmp_path):
     assert store.open_enter_decisions() != []
 
 
-def test_reconcile_handles_multiple_decisions_same_symbol(tmp_path):
+def test_reconcile_handles_multiple_decisions_same_symbol_no_order_id(tmp_path):
+    """Legacy fallback: decisions without order IDs all reconcile via symbol."""
     store = DecisionStore(tmp_path / "d.db")
     seed_open_enter(store, entry_price=100.0, stop_price=96.0, take_profit_price=108.0)
     seed_open_enter(store, entry_price=102.0, stop_price=98.0, take_profit_price=110.0)
@@ -265,7 +274,6 @@ def test_reconcile_handles_multiple_decisions_same_symbol(tmp_path):
 
     outcomes = reconcile_open_positions(broker, store)
 
-    # Both decisions get an outcome (same fill used for each — acceptable approximation)
     assert len(outcomes) == 2
 
 
@@ -315,3 +323,98 @@ def test_reconcile_short_position(tmp_path):
     o = outcomes[0]
     assert o.exit_reason == "take_profit"
     assert o.pnl == pytest.approx(80.0)  # (100-92) * 10
+
+
+# ---------------------------------------------------------------------------
+# Order-based reconciliation tests
+# ---------------------------------------------------------------------------
+
+
+def test_order_based_reconcile_uses_order_fill(tmp_path):
+    """Decision with broker_order_id reconciles via order, not symbol presence."""
+    store = DecisionStore(tmp_path / "d.db")
+    seed_open_enter(store, broker_order_id="order-1",
+                    entry_price=100.0, stop_price=96.0, take_profit_price=108.0)
+    filled_at = datetime(2026, 6, 16, 12, 0, tzinfo=timezone.utc)
+    broker = FakeBroker(
+        open_symbols={"AAPL"},  # symbol still in positions, but order filled
+        exit_orders={},
+        order_exit_fills={"order-1": FilledOrder(fill_price=108.0, filled_at=filled_at)},
+    )
+
+    outcomes = reconcile_open_positions(broker, store)
+
+    assert len(outcomes) == 1
+    assert outcomes[0].pnl == pytest.approx(80.0)
+
+
+def test_order_based_skips_unfilled_order(tmp_path):
+    """Decision with broker_order_id whose exit leg hasn't filled is skipped."""
+    store = DecisionStore(tmp_path / "d.db")
+    seed_open_enter(store, broker_order_id="order-1")
+    broker = FakeBroker(
+        open_symbols={"AAPL"},
+        exit_orders={},
+        order_exit_fills={"order-1": None},
+    )
+
+    outcomes = reconcile_open_positions(broker, store)
+
+    assert outcomes == []
+    assert store.open_enter_decisions() != []
+
+
+def test_order_based_multi_decision_same_symbol_independent(tmp_path):
+    """Three EOSE decisions with different order IDs reconcile independently."""
+    store = DecisionStore(tmp_path / "d.db")
+    seed_open_enter(store, broker_order_id="order-A", symbol="EOSE",
+                    entry_price=7.0, stop_price=6.0, take_profit_price=9.0, qty=100)
+    seed_open_enter(store, broker_order_id="order-B", symbol="EOSE",
+                    entry_price=7.5, stop_price=6.5, take_profit_price=9.5, qty=100)
+    seed_open_enter(store, broker_order_id="order-C", symbol="EOSE",
+                    entry_price=8.0, stop_price=7.0, take_profit_price=10.0, qty=100)
+
+    filled_at = datetime(2026, 6, 16, 12, 0, tzinfo=timezone.utc)
+    broker = FakeBroker(
+        open_symbols={"EOSE"},
+        exit_orders={},
+        order_exit_fills={
+            "order-A": FilledOrder(fill_price=9.0, filled_at=filled_at),
+            "order-B": None,  # still open
+            "order-C": FilledOrder(fill_price=7.0, filled_at=filled_at),
+        },
+    )
+
+    outcomes = reconcile_open_positions(broker, store)
+
+    assert len(outcomes) == 2
+    by_id = {o.decision_id: o for o in outcomes}
+    ids = sorted(by_id.keys())
+    assert by_id[ids[0]].pnl == pytest.approx(200.0)   # (9-7)*100 = take profit
+    assert by_id[ids[1]].pnl == pytest.approx(-100.0)   # (7-8)*100 = stop
+
+    remaining = store.open_enter_decisions()
+    assert len(remaining) == 1
+    assert remaining[0]["broker_order_id"] == "order-B"
+
+
+def test_mixed_order_and_symbol_based(tmp_path):
+    """Decisions with order IDs use order path; those without use symbol fallback."""
+    store = DecisionStore(tmp_path / "d.db")
+    seed_open_enter(store, broker_order_id="order-1", symbol="AAPL",
+                    entry_price=100.0, stop_price=96.0, take_profit_price=108.0)
+    seed_open_enter(store, symbol="MSFT",
+                    entry_price=200.0, stop_price=190.0, take_profit_price=220.0)
+
+    filled_at = datetime(2026, 6, 16, 12, 0, tzinfo=timezone.utc)
+    broker = FakeBroker(
+        open_symbols=set(),  # both symbols gone
+        exit_orders={"MSFT": FilledOrder(fill_price=220.0, filled_at=filled_at)},
+        order_exit_fills={"order-1": FilledOrder(fill_price=108.0, filled_at=filled_at)},
+    )
+
+    outcomes = reconcile_open_positions(broker, store)
+
+    assert len(outcomes) == 2
+    symbols = {o.symbol for o in outcomes}
+    assert symbols == {"AAPL", "MSFT"}

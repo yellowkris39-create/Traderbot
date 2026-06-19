@@ -27,6 +27,7 @@ class PortfolioState:
     cash: float
     last_equity: float
     positions: dict[str, PositionInfo] = field(default_factory=dict)
+    shorting_enabled: bool = True
 
     @property
     def daily_pnl(self) -> float:
@@ -50,6 +51,7 @@ def from_account_and_positions(account: dict, positions: list[dict]) -> Portfoli
             p["symbol"]: PositionInfo(symbol=p["symbol"], qty=float(p["qty"]), market_value=float(p["market_value"]))
             for p in positions
         },
+        shorting_enabled=bool(account.get("shorting_enabled", True)),
     )
 
 

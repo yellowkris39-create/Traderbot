@@ -34,6 +34,9 @@ class RiskLimits:
     max_trades_per_hour: int = 6
     max_consecutive_errors: int = 3
 
+    # --- LLM confidence floor ---
+    min_confidence: float = 0.60  # reject verdicts below this threshold
+
 
 def _float_env(name: str, default: float) -> float:
     value = os.environ.get(name)
@@ -61,4 +64,5 @@ def load_risk_limits() -> RiskLimits:
         ),
         max_trades_per_hour=_int_env("RISK_MAX_TRADES_PER_HOUR", defaults.max_trades_per_hour),
         max_consecutive_errors=_int_env("RISK_MAX_CONSECUTIVE_ERRORS", defaults.max_consecutive_errors),
+        min_confidence=_float_env("RISK_MIN_CONFIDENCE", defaults.min_confidence),
     )

@@ -44,6 +44,8 @@ class Config:
     anthropic_api_key: str | None
     llm: LLMConfig
     log_dir: Path
+    reconcile_interval_seconds: int = 300
+    portfolio_cache_seconds: int = 30
 
     @property
     def is_paper(self) -> bool:
@@ -95,4 +97,6 @@ def load_config() -> Config:
         anthropic_api_key=os.environ.get("ANTHROPIC_API_KEY") or None,
         llm=llm,
         log_dir=log_dir,
+        reconcile_interval_seconds=int(os.environ.get("RECONCILE_INTERVAL_SECONDS", "300")),
+        portfolio_cache_seconds=int(os.environ.get("PORTFOLIO_CACHE_SECONDS", "30")),
     )

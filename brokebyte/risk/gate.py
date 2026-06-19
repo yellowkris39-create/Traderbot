@@ -76,6 +76,10 @@ def evaluate(
         return _hold("verdict direction is none")
     if verdict.is_already_priced_in:
         return _hold("already priced in")
+    if verdict.confidence < limits.min_confidence:
+        return _hold(f"confidence {verdict.confidence:.2f} below minimum {limits.min_confidence:.2f}")
+    if verdict.direction == Direction.SHORT and not portfolio.shorting_enabled:
+        return _hold("short direction rejected: shorting not enabled on this account")
 
     # 2. Guard 8 — injection / hallucination ----------------------------------
     injection_check = check_injection_patterns(event)

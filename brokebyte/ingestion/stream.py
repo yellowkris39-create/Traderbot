@@ -76,11 +76,15 @@ class NewsStream:
                 queue_size=self._queue.qsize(),
             )
 
-    def start(self) -> None:
-        """Start the websocket stream in a background daemon thread."""
+    def start(self) -> threading.Thread:
+        """Start the websocket stream in a background daemon thread.
+
+        Returns the thread so callers can monitor aliveness and restart on death.
+        """
         thread = threading.Thread(target=self._stream.run, daemon=True, name="news-stream")
         thread.start()
         self._log.info("news_stream_thread_started")
+        return thread
 
     def stop(self) -> None:
         """Shut down the websocket gracefully."""
