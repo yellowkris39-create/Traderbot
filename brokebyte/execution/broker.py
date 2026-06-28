@@ -10,9 +10,11 @@ from datetime import datetime
 
 from alpaca.trading.client import TradingClient
 from alpaca.common.enums import Sort
-from alpaca.trading.enums import OrderSide, OrderStatus, QueryOrderStatus
+from alpaca.trading.enums import OrderSide, OrderStatus, OrderType, QueryOrderStatus
 from alpaca.trading.models import Order
-from alpaca.trading.requests import GetOrdersRequest
+from alpaca.trading.requests import GetOrderByIdRequest, GetOrdersRequest, ReplaceOrderRequest
+
+_NESTED = GetOrderByIdRequest(nested=True)
 
 from brokebyte.common import FilledOrder
 from brokebyte.config import Config
@@ -68,7 +70,7 @@ class Broker:
     def get_order_exit_fill(self, order_id: str) -> FilledOrder | None:
         """Return the filled exit leg of a bracket order, or None if not yet filled."""
         try:
-            order = self._client.get_order_by_id(order_id, nested=True)
+            order = self._client.get_order_by_id(order_id, filter=_NESTED)
         except Exception:
             return None
 
@@ -133,4 +135,71 @@ class Broker:
                             fill_price=float(leg.filled_avg_price),
                             filled_at=leg.filled_at,
                         )
+        return None
+
+    # -- Active exit management (used by brokebyte.monitor.exit_manager) -------
+    # INTEGRATION NOTE: verify these four against the paper account before
+    # relying on them in production (esp. how flatten interacts with the open
+    # bracket legs). Method names confirmed against alpaca-py.
+
+    def get_current_price(self, symbol: str) -> float | None:
+        """Latest price for an OPEN position, or None if no position exists."""
+        try:
+            pos = self._client.get_open_position(symbol)
+        except Exception:
+            return None
+        if pos is None or pos.current_price is None:
+            return None
+        return float(pos.current_price)
+
+    def get_open_stop(self, order_id: str) -> tuple[str, float] | None:
+        """Return (stop_leg_id, stop_price) for the still-open stop leg of a
+        bracket order, or None if there is no open stop leg."""
+        try:
+            order = self._client.get_order_by_id(order_id, filter=_NESTED)
+        except Exception:
+            return None
+        legs = order.legs or []
+        open_states = {OrderStatus.NEW, OrderStatus.ACCEPTED, OrderStatus.HELD,
+                       OrderStatus.PENDING_NEW}
+        for leg in legs:
+            if (
+                leg.order_type in (OrderType.STOP, OrderType.STOP_LIMIT)
+                and leg.status in open_states
+                and leg.stop_price is not None
+            ):
+                return str(leg.id), float(leg.stop_price)
+        return None
+
+    def replace_stop(self, stop_leg_id: str, new_stop_price: float) -> None:
+        """Move an existing stop leg to a new stop price (break-even move)."""
+        self._client.replace_order_by_id(
+            stop_leg_id, ReplaceOrderRequest(stop_price=new_stop_price)
+        )
+
+    def flatten(self, symbol: str, order_id: str) -> FilledOrder | None:
+        """Force-close a position at market for the time-stop. Cancels the
+        bracket's open legs first so they don't fight the market close, then
+        closes the position. Returns the close fill if available this cycle."""
+        try:
+            order = self._client.get_order_by_id(order_id, filter=_NESTED)
+            for leg in (order.legs or []):
+                if leg.status in {OrderStatus.NEW, OrderStatus.ACCEPTED,
+                                  OrderStatus.HELD, OrderStatus.PENDING_NEW}:
+                    try:
+                        self._client.cancel_order_by_id(str(leg.id))
+                    except Exception:
+                        pass
+        except Exception:
+            pass
+
+        close_order = self._client.close_position(symbol)
+        if (
+            getattr(close_order, "status", None) == OrderStatus.FILLED
+            and getattr(close_order, "filled_avg_price", None) is not None
+        ):
+            return FilledOrder(
+                fill_price=float(close_order.filled_avg_price),
+                filled_at=close_order.filled_at,
+            )
         return None

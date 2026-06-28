@@ -39,6 +39,7 @@ from brokebyte.llm.provider import Direction, LLMProvider
 from brokebyte.logging_setup import configure_logging, get_logger
 from brokebyte.memory.retrieval import format_similar_setups, retrieve_similar
 from brokebyte.memory.store import DecisionStore
+from brokebyte.monitor.exit_manager import manage_open_positions
 from brokebyte.monitor.reconcile import reconcile_open_positions
 from brokebyte.risk import gate
 from brokebyte.risk import portfolio as portfolio_module
@@ -364,6 +365,20 @@ def run_stream() -> None:
             # --- Periodic position reconciliation ---
             now = datetime.now(timezone.utc)
             if (now - last_reconcile).total_seconds() >= config.reconcile_interval_seconds:
+                # Active exit management first: move stops to break-even at +1R
+                # and force-close positions past the 10-day time-stop. This is
+                # what prevents positions drifting open forever (the historical
+                # "0 closed trades" bug).
+                try:
+                    exit_actions = manage_open_positions(broker, memory, log, now=now)
+                    if exit_actions:
+                        portfolio_cache.invalidate()
+                        for act in exit_actions:
+                            if act.kind == "close_time_stop":
+                                active_symbols.discard(act.symbol)
+                except Exception as exc:  # noqa: BLE001 - never let exits kill the loop
+                    log.error("exit_manage_error", error=str(exc))
+
                 outcomes = reconcile_open_positions(broker, memory, log)
                 # Release the duplicate-order guard for any symbol whose
                 # position just closed so the bot can re-enter on fresh news.
