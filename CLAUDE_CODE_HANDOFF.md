@@ -1,55 +1,45 @@
 # Claude Code handoff — BrokeByte
 
-Paste relevant parts to Claude Code (it has SSH to the droplet; Cowork doesn't).
-All code below is unit-tested locally (303 tests pass; the 1 local "failure" is a
-sandbox SOCKS-proxy artifact in the anthropic client — passes on the server).
+All code unit-tested locally (311 tests pass; the 1 local "failure" is a sandbox
+SOCKS-proxy artifact in the anthropic client — passes on the server).
 
-## STATUS
-- Exit manager VERIFIED on paper 2026-06-28: flatten closed NOK cleanly, zero
-  orphan orders. get_current_price / get_open_stop / replace_stop / flatten all work.
-- Screener built; needs a live yfinance dry-run (Yahoo unreachable from the build box).
+## STATUS (verified live on paper 2026-06-28)
+- Exit manager works: get_open_stop returned ('f1cac7b4…', 26.0) on a SIRI bracket;
+  flatten closed SIRI clean, zero orphans. replace_stop still unverified (needs a
+  live position at +1R — it'll exercise itself when one reaches break-even).
+- Screener dry-run works end-to-end: 18 symbols, BARC.L=£5.05 (pounds OK), market
+  cap £68.1B, GBP/USD 1.3250. No setups today (legit — strict ruleset). Timer armed.
+- Repo committed + pushed (999cd06).
 
-## IMPORTANT FIX TO PULL (broker.py)
-You fixed `get_order_exit_fill` on the server to use GetOrderByIdRequest. The SAME
-call was wrong in `get_open_stop` AND `flatten` (alpaca-py 0.43: get_order_by_id
-takes `filter=GetOrderByIdRequest(nested=True)`, not `nested=True`). Their try/except
-masked it — meaning **break-even / trailing stop moves would silently never fire**
-because get_open_stop always returned None. My local `broker.py` now fixes all three
-call sites (module-level `_NESTED = GetOrderByIdRequest(nested=True)`). Make the
-server's broker.py match this (pull my version), then confirm get_open_stop returns a
-real (leg_id, stop_price) for an OPEN bracket — that's the proof break-even works.
-
-## WHAT CHANGED SINCE LAST HANDOFF
-- broker.py: all get_order_by_id calls use filter=_NESTED (fixes get_open_stop/flatten).
-- exits.py: added the TRAILING stop (2% below price at >=1.5R, ratchets up only,
-  never below entry). Time-stop + break-even already there.
-- screener: FX added — yfinance_provider.fx_per_gbp(currency) via GBP{CCY}=X;
-  Screener passes it into sizing so US ($) positions size correctly. If the rate
-  is unavailable it falls back to 1.0 and the alert flags "apply FX".
+## NEW SINCE 999cd06 (uncommitted in my local; pull these)
+- `brokebyte/screener/backtest.py` — walk-forward backtest of the ruleset + exit
+  ladder; `compute_metrics` reports win rate / avg-R / expectancy.
+- `brokebyte/screener/screen.py` — evaluate_symbol gained `skip_universe` (backtest
+  can't reconstruct point-in-time fundamentals, so it tests the bar-derived
+  trend/setup/trigger only).
+- `brokebyte/screener/yfinance_provider.py` — aligned to your `_fi_get` FastInfo fix
+  (attribute-first, dict fallback) so my local matches the server.
+- `tests/test_backtest_screener.py` (8 tests).
 
 ## TASKS
-1. `cd /root/Trader && git checkout -- requirements.txt`  (cosmetic BOM diff)
-2. Pull/merge my broker.py + exits.py + screener changes; `git add -A && git commit`
-   and push to the remote.
-3. `venv/bin/python -m pytest -q`  (expect green).
-4. Confirm break-even/trailing path: on an OPEN paper bracket, call
-   `Broker(load_config()).get_open_stop("<bracket_order_id>")` — it must return
-   (leg_id, stop_price), NOT None. (Pre-fix it returned None.)
-5. yfinance dry-run + verify data:
+1. Pull/merge the above; `venv/bin/python -m pytest -q` (expect green); commit + push.
+2. **Run the historical backtest** (yfinance needs the server's network):
    ```
-   venv/bin/pip install yfinance
-   venv/bin/python -m brokebyte.screener --no-send
+   cd /root/Trader && venv/bin/python -m brokebyte.screener.backtest
+   # or specific names:  venv/bin/python -m brokebyte.screener.backtest AAPL MSFT BARC.L
    ```
-   Check: LSE ('.L') prices in POUNDS not pence; US setups size correctly with the
-   GBP/USD rate (no "apply FX" warning if the GBPUSD=X fetch worked).
-6. Enable the daily timer:
-   ```
-   cp deploy/brokebyte-screener.{service,timer} /etc/systemd/system/
-   systemctl daemon-reload && systemctl enable --now brokebyte-screener.timer
-   systemctl start brokebyte-screener.service   # test webhook once
-   ```
+   Report the OVERALL line: trades, win rate, avg R, expectancy. That's the
+   "is the edge real" number — if expectancy is <= 0 over a decent sample, we
+   retune before trusting live.
+3. `git checkout -- requirements.txt` (recurring cosmetic BOM diff).
+
+## BACKTEST CAVEATS (built in, stated honestly)
+- Entry = next bar open; if a bar touches both stop & target, stop assumed first.
+- Break-even/trailing evaluated on close, applied next bar (no intrabar).
+- No commission/slippage/spread. Universe filters (cap/beta/earnings) skipped in
+  backtest — so live results will be stricter (fewer trades) than the backtest.
 
 ## REMAINING FOLLOW-UPS
-- Backtest the merged ruleset over history; report win rate + avg R-multiple.
 - Expand universe.py from the starter list to full S&P 500 + FTSE 350.
-- (Optional) holiday-aware trading-day count for the time-stop (currently weekday count).
+- (Optional) holiday-aware trading-day count for the time-stop (currently weekdays).
+- (Optional) commission/slippage model in the backtest for realism.

@@ -84,6 +84,7 @@ def evaluate_symbol(
     account: float = 500.0,
     now: datetime | None = None,
     fx_per_gbp: float = 1.0,
+    skip_universe: bool = False,
 ) -> ScreenResult:
     """Run the full ruleset on one symbol. Pure — no I/O."""
     now = now or datetime.now(timezone.utc)
@@ -107,17 +108,20 @@ def evaluate_symbol(
         return ScreenResult(symbol, False, failures=[f"indicator error: {exc}"])
 
     dte = _days_to_earnings(fundamentals, now)
-    universe = rules.check_universe(
-        price=price,
-        market_cap=fundamentals.market_cap or 0.0,
-        avg_volume=avg_vol,
-        beta=fundamentals.beta if fundamentals.beta is not None else 999.0,
-        days_to_earnings=dte,
-    )
     trend = rules.check_trend(price, sma50, sma200, ema20)
     setup = rules.check_setup(pb, rsi_value, rel)
     trigger = rules.check_trigger(reversal, vol_surge, rsi_cross)
-    agg = rules.qualifies(universe, trend, setup, trigger)
+    if skip_universe:
+        agg = rules.qualifies(trend, setup, trigger)
+    else:
+        universe = rules.check_universe(
+            price=price,
+            market_cap=fundamentals.market_cap or 0.0,
+            avg_volume=avg_vol,
+            beta=fundamentals.beta if fundamentals.beta is not None else 999.0,
+            days_to_earnings=dte,
+        )
+        agg = rules.qualifies(universe, trend, setup, trigger)
 
     if not agg.passed:
         return ScreenResult(symbol, False, price=price, failures=agg.failures)
