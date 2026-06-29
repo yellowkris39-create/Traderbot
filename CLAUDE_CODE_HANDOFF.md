@@ -1,75 +1,83 @@
-# Claude Code handoff — BrokeByte Phase 1
+# Claude Code handoff — BrokeByte (exit-manager fix + screener)
 
 Paste the block below to Claude Code (it has SSH to the droplet; Cowork doesn't).
-Everything here was built and unit-tested locally (281 tests pass, 27 new). The
-only things needing the live paper account are the git remote and verifying the
-new broker exit methods against Alpaca.
+Everything here was built and unit-tested locally (296 tests pass; the 1 local
+"failure" is a sandbox SOCKS-proxy artifact in the anthropic client — it passes
+on the server). Two things genuinely need the live environment and could NOT be
+tested locally: (a) the broker exit methods against Alpaca, (b) yfinance data
+(Yahoo is unreachable from the build sandbox).
+
+See `REASSESSMENT_AND_PLAN.md` for the full design.
 
 ---
 
-## TASK FOR CLAUDE CODE
+## WHAT CHANGED
 
-We pivoted BrokeByte: a new broker-agnostic technical screener is being added in
-parallel with the news bot, and Phase 1 adds the missing exit manager that fixes
-the "0 closed trades" bug. See `REASSESSMENT_AND_PLAN.md` for the full design.
+Phase 1 — exit manager (fixes "0 closed trades"):
+- NEW `brokebyte/monitor/exits.py`, `brokebyte/monitor/exit_manager.py`
+- CHANGED `brokebyte/execution/broker.py` (+get_current_price/get_open_stop/replace_stop/flatten)
+- CHANGED `brokebyte/main.py` (calls manage_open_positions() each reconcile cycle)
 
-New/changed files in the local repo (already present, tested):
-- NEW `brokebyte/monitor/exits.py` — pure exit logic (time-stop day 10, break-even at +1R).
-- NEW `brokebyte/monitor/exit_manager.py` — orchestrates exits via the broker.
-- NEW `brokebyte/analysis/indicators_ext.py` — EMA, RSI, avg volume, relative strength, candlesticks.
-- NEW `brokebyte/screener/` — package skeleton (rules.py, sizing_gbp.py, data.py, universe.py).
-- NEW `tests/test_phase1_screener.py`, `tests/test_exit_manager.py` (27 tests).
-- CHANGED `brokebyte/execution/broker.py` — added get_current_price, get_open_stop, replace_stop, flatten.
-- CHANGED `brokebyte/main.py` — calls manage_open_positions() each reconcile cycle before reconcile_open_positions().
+Phases 3–5 — broker-agnostic screener (alerts only, never trades):
+- NEW `brokebyte/analysis/indicators_ext.py` (EMA, RSI, vol, rel-strength, candlesticks)
+- NEW `brokebyte/screener/` (rules.py, sizing_gbp.py, data.py, yfinance_provider.py,
+  screen.py, alerts.py, universe.py, __main__.py)
+- NEW `deploy/brokebyte-screener.service` + `.timer` (daily 21:30 UTC)
+- NEW tests: test_phase1_screener.py, test_exit_manager.py, test_screener_pipeline.py
 
-Please do the following, in order:
+## TASKS (in order)
 
-1. **Cosmetic cleanup:** `cd /root/Trader && git checkout -- requirements.txt`
-   (a BOM/line-ending-only diff crept in; the package list is unchanged).
+1. `cd /root/Trader && git checkout -- requirements.txt`  (drops a cosmetic BOM-only diff)
 
-2. **Add an off-machine git remote and push** (the repo is currently local-only —
-   no backup). Create a private remote (GitHub/GitLab), then:
+2. Add an off-machine git remote and commit/push (repo is local-only — no backup):
    ```
    cd /root/Trader
    git add -A
-   git commit -m "Phase 8: exit manager (time-stop + break-even) and screener foundation"
+   git commit -m "Phase 8: exit manager + broker-agnostic screener"
    git remote add origin <PRIVATE_REPO_URL>
    git push -u origin master   # or main
    ```
 
-3. **Run the test suite on the server** to confirm parity:
-   ```
-   cd /root/Trader && venv/bin/python -m pytest -q
-   ```
-   Expect all green (the local sandbox's one failure was a proxy artifact, not a
-   code issue — the server should pass it).
+3. Run the suite on the server: `cd /root/Trader && venv/bin/python -m pytest -q`
+   (expect all green).
 
-4. **VERIFY the new broker exit methods against the Alpaca PAPER account.** These
-   wrap alpaca-py calls whose live behaviour must be confirmed (method *names* are
-   verified, live *semantics* are not):
-   - `get_open_stop(order_id)` — does the bracket's stop leg show `order_type ==
-     STOP` and a populated `stop_price` while open? Confirm it's found.
-   - `replace_stop(stop_leg_id, price)` — confirm `replace_order_by_id` on the
-     STOP child leg actually moves the stop (not the parent order).
-   - `flatten(symbol, order_id)` — confirm cancelling the open legs then
-     `close_position(symbol)` cleanly closes without leaving orphan orders, and
-     that the returned fill price is correct. **Test on one throwaway paper
-     position first.**
-   A safe check: open a tiny paper bracket, then in a Python shell call each
-   method and inspect results before trusting the loop.
-
-5. **Deploy and restart** once verified:
+4. **VERIFY broker exit methods on the PAPER account** (names verified, live
+   semantics not). On one throwaway paper position, confirm: get_open_stop finds
+   the STOP leg with a stop_price; replace_stop moves that leg (not the parent);
+   flatten cancels open legs then close_position cleanly closes with a correct
+   fill and no orphan orders. Only then restart:
    ```
-   systemctl restart brokebyte
-   journalctl -u brokebyte -f
+   systemctl restart brokebyte && journalctl -u brokebyte -f
    ```
-   Watch for `exit_manage_cycle`, `exit_move_breakeven`, and `exit_time_stop_closed`
-   log lines on the reconcile interval.
+   Watch for exit_manage_cycle / exit_move_breakeven / exit_time_stop_closed.
+   NOTE: existing paper positions older than 10 trading days will be time-stopped
+   on the next cycle once flatten is verified — confirm that's desired first.
 
-6. **Optional immediate win:** there are existing open paper positions that may be
-   past 10 trading days. After step 4 verifies `flatten`, the exit manager will
-   time-stop them on the next cycle. Confirm that's desired before restart, or
-   close them manually.
+5. **Install yfinance + verify data**, then the screener:
+   ```
+   cd /root/Trader && venv/bin/pip install yfinance
+   venv/bin/python -m brokebyte.screener --no-send        # dry run, prints only
+   ```
+   Sanity-check the printed setups: LSE ('.L') prices must be in POUNDS not pence
+   (the provider divides GBp by 100 — confirm a known LSE price looks right), and
+   for US names note the FX warning in "Key risks" (position size assumes £1=1
+   unit until a live GBP/USD rate is wired — Phase 6 work).
 
-Report back: test result, whether the four broker methods behaved as expected on
-paper, and any orphaned-order issues from `flatten`.
+6. Enable the daily screener timer (after step 5 looks right):
+   ```
+   cp deploy/brokebyte-screener.{service,timer} /etc/systemd/system/
+   systemctl daemon-reload
+   systemctl enable --now brokebyte-screener.timer
+   systemctl start brokebyte-screener.service   # one manual run to test the webhook
+   ```
+   Alerts reuse the existing HEALTH_WEBHOOK_* env (Telegram) — no new config.
+
+Report back: server test result; whether the 4 broker methods behaved on paper
+(any orphan orders from flatten?); and whether yfinance LSE prices came through
+in pounds correctly.
+
+## KNOWN FOLLOW-UPS (Phase 6, not yet built)
+- Live GBP/USD FX so US-stock position sizes are correct (currently flagged, not converted).
+- Backtest the merged ruleset over history; report win rate + avg R-multiple.
+- Expand universe.py from the starter list to full S&P 500 + FTSE 350.
+- 2% trailing stop at +1.5R (time-stop + break-even are done; trailing is not).

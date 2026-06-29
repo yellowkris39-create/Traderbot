@@ -1,0 +1,9 @@
+[Unit]
+Description=BrokeByte daily swing-trade screener (one-shot, alerts only)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+WorkingDirectory=/root/Trader
+ExecStart=/root/Trader/venv/bin/python -m brokebyte.screener

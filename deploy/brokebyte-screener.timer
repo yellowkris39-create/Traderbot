@@ -1,0 +1,10 @@
+[Unit]
+Description=Run the BrokeByte screener once daily after US close
+
+[Timer]
+# 21:30 UTC ~ shortly after the US market close (16:00 ET). Adjust as needed.
+OnCalendar=*-*-* 21:30:00
+Persistent=true
+
+[Install]
+WantedBy=timers.target

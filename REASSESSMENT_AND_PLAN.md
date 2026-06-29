@@ -209,6 +209,8 @@ logic.
 
 ## 6. Phased roadmap
 
+_Progress (2026-06-28): Phases 1–5 are built and unit-tested locally (296 tests pass). Live verification of broker exits + yfinance data is pending Monday's open. Phase 6 (backtest validation) is next._
+
 1. **Foundation & safety.** Add a git remote (off-machine backup). Patch a time-stop/exit
    manager into the news bot so it stops accumulating dead positions. _(Fixes the "never
    closes" bug independently of the new strategy.)_

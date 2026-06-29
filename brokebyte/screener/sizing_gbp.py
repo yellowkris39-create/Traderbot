@@ -9,7 +9,7 @@ Two caps apply and the smaller share count wins:
   1. Risk cap: loss if the stop hits must equal ~1% of the account.
   2. Exposure cap: notional must stay within `max_position_pct` of the account.
 
-NOTE: the strategy's worked example (3.33 shares of a £50 stock) puts £166.50
+Amounts are in the INSTRUMENT currency (use fx_per_gbp for non-GBP). NOTE: the strategy's worked example (3.33 shares of a £50 stock) puts £166.50
 into one position, which EXCEEDS the 20% (£100) cap it also states. The two
 rules conflict; this sizer honours the exposure cap (the safer choice), so for
 that example it returns 2.00 shares, not 3.33. Set max_position_pct high to
@@ -48,20 +48,24 @@ def size_trade_gbp(
     reward_risk: float = 2.0,
     max_position_pct: float = 0.20,
     lot_decimals: int = 2,
+    fx_per_gbp: float = 1.0,
 ) -> GbpTradePlan | None:
     """Return a sized long plan, or None if no valid (>0) size exists.
 
     Only long setups are sized (the swing strategy is long-only). `stop_price`
     must be below `entry_price`.
     """
-    if entry_price <= 0 or stop_price <= 0 or stop_price >= entry_price:
+    if entry_price <= 0 or stop_price <= 0 or stop_price >= entry_price or fx_per_gbp <= 0:
         return None
 
+    # entry/stop are in the instrument's currency; convert the account's £ risk
+    # budget and exposure cap into that currency via fx_per_gbp (units of the
+    # instrument currency per £1). fx_per_gbp == 1.0 for GBP instruments.
     risk_per_share = entry_price - stop_price
-    risk_amount_target = account * risk_pct
+    risk_amount_target = account * risk_pct * fx_per_gbp
 
     shares_by_risk = _floor_to(risk_amount_target / risk_per_share, lot_decimals)
-    max_notional = account * max_position_pct
+    max_notional = account * max_position_pct * fx_per_gbp
     shares_by_exposure = _floor_to(max_notional / entry_price, lot_decimals)
 
     shares = min(shares_by_risk, shares_by_exposure)

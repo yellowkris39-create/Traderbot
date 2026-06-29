@@ -72,31 +72,22 @@ def manage_open_positions(
             continue  # position already gone; reconciler books the outcome
 
         stop = broker.get_open_stop(order_id)
-        stop_leg_id: str | None = None
-        if stop is not None:
-            stop_leg_id, current_stop_val = stop
-        else:
-            # No live stop leg (expired/cancelled bracket). Use entry price
-            # as the "current stop" so break-even won't fire (neutral), but
-            # the time-stop date check can still proceed.
-            current_stop_val = float(row["plan_entry_price"])
+        if stop is None:
+            continue  # no live stop leg to reason about
+        stop_leg_id, current_stop = stop
 
         side = row["plan_side"] or "buy"
         action = exits.decide_exit(
             side=side,
             entry_price=float(row["plan_entry_price"]),
             stop_price=float(row["plan_stop_price"]),
-            current_stop_price=current_stop_val,
+            current_stop_price=float(current_stop),
             current_price=float(price),
             opened_at=datetime.fromisoformat(row["recorded_at"]),
             now=now,
         )
 
         if action.kind == exits.MOVE_BREAKEVEN and action.new_stop_price is not None:
-            if stop_leg_id is None:
-                log.warning("exit_breakeven_no_stop_leg",
-                            decision_id=row["id"], symbol=symbol)
-                continue
             broker.replace_stop(stop_leg_id, action.new_stop_price)
             log.info("exit_move_breakeven", decision_id=row["id"], symbol=symbol,
                      new_stop=action.new_stop_price)
@@ -105,7 +96,7 @@ def manage_open_positions(
         elif action.kind == exits.CLOSE_TIME_STOP:
             try:
                 fill = broker.flatten(symbol, order_id)
-            except Exception as exc:
+            except Exception as exc:  # noqa: BLE001
                 log.warning("exit_time_stop_failed", decision_id=row["id"],
                             symbol=symbol, error=str(exc))
                 continue
