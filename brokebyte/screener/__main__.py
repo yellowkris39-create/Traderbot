@@ -25,7 +25,7 @@ except Exception:  # noqa: BLE001
 
 from brokebyte.screener import alerts
 from brokebyte.screener.screen import Screener
-from brokebyte.screener.universe import starter_universe
+from brokebyte.screener.universe import load_universe
 from brokebyte.screener.yfinance_provider import YFinanceProvider
 
 
@@ -55,7 +55,7 @@ def main(argv: list[str] | None = None) -> None:
     account = float(os.environ.get("SCREENER_ACCOUNT_GBP", "500"))
     log_dir = os.environ.get("LOG_DIR", "logs")
 
-    universe = starter_universe(include_us=include_us, include_lse=include_lse)
+    universe = load_universe(include_us=include_us, include_lse=include_lse)
     screener = Screener(YFinanceProvider(), account=account)
     results = screener.scan(universe)
 
