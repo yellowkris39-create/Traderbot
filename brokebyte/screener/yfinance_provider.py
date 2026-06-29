@@ -52,18 +52,25 @@ def normalize_bars(raw: pd.DataFrame, currency: str | None) -> pd.DataFrame:
     return df
 
 
-def extract_currency(fast_info) -> str | None:
+def _get(obj, key):
+    """Retrieve a value from a dict or yfinance FastInfo object."""
     try:
-        return fast_info.get("currency")
+        return getattr(obj, key)
     except Exception:
-        return getattr(fast_info, "currency", None)
+        pass
+    try:
+        return obj[key]
+    except Exception:
+        return None
+
+
+def extract_currency(fast_info) -> str | None:
+    v = _get(fast_info, "currency")
+    return str(v) if v else None
 
 
 def extract_market_cap(fast_info) -> float | None:
-    try:
-        v = fast_info.get("market_cap")
-    except Exception:
-        v = getattr(fast_info, "market_cap", None)
+    v = _get(fast_info, "market_cap") or _get(fast_info, "marketCap")
     return float(v) if v else None
 
 

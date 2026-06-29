@@ -12,7 +12,9 @@ from alpaca.trading.client import TradingClient
 from alpaca.common.enums import Sort
 from alpaca.trading.enums import OrderSide, OrderStatus, OrderType, QueryOrderStatus
 from alpaca.trading.models import Order
-from alpaca.trading.requests import GetOrdersRequest, ReplaceOrderRequest
+from alpaca.trading.requests import GetOrderByIdRequest, GetOrdersRequest, ReplaceOrderRequest
+
+_NESTED = GetOrderByIdRequest(nested=True)
 
 from brokebyte.common import FilledOrder
 from brokebyte.config import Config
@@ -68,7 +70,7 @@ class Broker:
     def get_order_exit_fill(self, order_id: str) -> FilledOrder | None:
         """Return the filled exit leg of a bracket order, or None if not yet filled."""
         try:
-            order = self._client.get_order_by_id(order_id, nested=True)
+            order = self._client.get_order_by_id(order_id, filter=_NESTED)
         except Exception:
             return None
 
@@ -152,7 +154,7 @@ class Broker:
         """Return (stop_leg_id, stop_price) for the still-open stop leg of a
         bracket order, or None if there is no open stop leg."""
         try:
-            order = self._client.get_order_by_id(order_id, nested=True)
+            order = self._client.get_order_by_id(order_id, filter=_NESTED)
         except Exception:
             return None
         legs = order.legs or []
@@ -178,7 +180,7 @@ class Broker:
         bracket's open legs first so they don't fight the market close, then
         closes the position. Returns the close fill if available this cycle."""
         try:
-            order = self._client.get_order_by_id(order_id, nested=True)
+            order = self._client.get_order_by_id(order_id, filter=_NESTED)
             for leg in (order.legs or []):
                 if leg.status in {OrderStatus.NEW, OrderStatus.ACCEPTED,
                                   OrderStatus.HELD, OrderStatus.PENDING_NEW}:
