@@ -17,10 +17,22 @@ starter universe.
 from __future__ import annotations
 
 import json
+import urllib.request
 from datetime import datetime, timezone
+from io import StringIO
 from pathlib import Path
 
 import pandas as pd
+
+_HEADERS = {"User-Agent": "Mozilla/5.0 (BrokeByte universe fetch)"}
+
+
+def _read_html_ua(url: str) -> list[pd.DataFrame]:
+    """pd.read_html with a User-Agent so Wikipedia doesn't 403."""
+    req = urllib.request.Request(url, headers=_HEADERS)
+    with urllib.request.urlopen(req, timeout=30) as resp:
+        html = resp.read().decode("utf-8")
+    return pd.read_html(StringIO(html))
 
 SP500_URL = "https://en.wikipedia.org/wiki/List_of_S%26P_500_companies"
 FTSE100_URL = "https://en.wikipedia.org/wiki/FTSE_100_Index"
@@ -62,7 +74,7 @@ def parse_tickers(tables: list[pd.DataFrame], candidates: tuple[str, ...]) -> li
 
 
 def fetch_us() -> list[str]:
-    tables = pd.read_html(SP500_URL)
+    tables = _read_html_ua(SP500_URL)
     return [normalize_us_ticker(t) for t in parse_tickers(tables, _US_COLS)]
 
 
@@ -70,7 +82,7 @@ def fetch_lse() -> list[str]:
     out: list[str] = []
     for url in (FTSE100_URL, FTSE250_URL):
         try:
-            tables = pd.read_html(url)
+            tables = _read_html_ua(url)
             out.extend(normalize_lse_ticker(t) for t in parse_tickers(tables, _LSE_COLS))
         except Exception:
             continue
