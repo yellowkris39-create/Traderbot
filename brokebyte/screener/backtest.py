@@ -211,7 +211,7 @@ def run_cli(symbols: list[str], *, max_holding_days: int = 10) -> str:
 
 if __name__ == "__main__":
     import sys
-    from brokebyte.screener.universe import starter_universe
+    from brokebyte.screener.universe import load_universe
     args = [a for a in sys.argv[1:] if not a.startswith("-")]
-    syms = args or starter_universe()
+    syms = args or load_universe()
     print(run_cli(syms))
