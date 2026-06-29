@@ -57,18 +57,26 @@ def normalize_bars(raw: pd.DataFrame, currency: str | None) -> pd.DataFrame:
     return df
 
 
-def extract_currency(fast_info) -> str | None:
+def _fi_get(obj, key):
+    """Retrieve from a yfinance FastInfo (attribute) or a plain dict (.get).
+    FastInfo.get() silently returns None for valid keys on some yfinance
+    versions — try attribute access first."""
+    v = getattr(obj, key, None)
+    if v is not None:
+        return v
     try:
-        return fast_info.get("currency")
+        return obj[key]
     except Exception:
-        return getattr(fast_info, "currency", None)
+        return None
+
+
+def extract_currency(fast_info) -> str | None:
+    v = _fi_get(fast_info, "currency")
+    return str(v) if v else None
 
 
 def extract_market_cap(fast_info) -> float | None:
-    try:
-        v = fast_info.get("market_cap")
-    except Exception:
-        v = getattr(fast_info, "market_cap", None)
+    v = _fi_get(fast_info, "market_cap") or _fi_get(fast_info, "marketCap")
     return float(v) if v else None
 
 
@@ -162,7 +170,7 @@ class YFinanceProvider:
             return 1.0
         try:
             fast = self._ticker(fx_ticker(currency)).fast_info
-            rate = fast.get("last_price") if hasattr(fast, "get") else getattr(fast, "last_price", None)
+            rate = _fi_get(fast, "last_price") or _fi_get(fast, "lastPrice")
             return float(rate) if rate else None
         except Exception:
             return None
