@@ -154,6 +154,7 @@ class Screener:
         self._provider = provider
         self._account = account
         self._index_cache: dict[str, pd.DataFrame] = {}
+        self._fx_cache: dict[str, float | None] = {}
 
     def _index_bars(self, symbol: str) -> pd.DataFrame:
         idx = index_symbol_for(symbol)
@@ -169,6 +170,17 @@ class Screener:
             return False
         return float(bars["close"].iloc[-1]) > ind.sma(bars, 200)
 
+    def _fx_per_gbp(self, currency: str) -> float:
+        """Units of instrument currency per £1; 1.0 for GBP or when the rate is
+        unavailable (evaluate_symbol then flags the size as FX-pending)."""
+        if currency == "GBP":
+            return 1.0
+        if currency not in self._fx_cache:
+            fn = getattr(self._provider, "fx_per_gbp", None)
+            self._fx_cache[currency] = fn(currency) if fn else None
+        rate = self._fx_cache[currency]
+        return rate if rate else 1.0
+
     def scan(self, symbols: list[str], *, now: datetime | None = None) -> list[ScreenResult]:
         """Evaluate every symbol; return only the ones that qualify."""
         results: list[ScreenResult] = []
@@ -181,8 +193,9 @@ class Screener:
                 index_bars = self._index_bars(sym)
             except Exception:
                 continue
+            fx = self._fx_per_gbp(funds.currency)
             res = evaluate_symbol(sym, bars, index_bars, funds,
-                                  account=self._account, now=now)
+                                  account=self._account, now=now, fx_per_gbp=fx)
             if res.passed:
                 results.append(res)
         return results

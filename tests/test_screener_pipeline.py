@@ -189,3 +189,38 @@ def test_full_pass_flags_fx_for_non_gbp():
     f = Fundamentals(2e9, 1.1, datetime(2030, 1, 1, tzinfo=timezone.utc), "USD")
     r = evaluate_symbol("TEST", _qualifying_bars(), _flat_index(), f)  # USD, fx default
     assert any("FX" in risk for risk in r.risks)
+
+
+# ----------------------- FX -----------------------
+
+def test_fx_ticker_format():
+    from brokebyte.screener import yfinance_provider as yp
+    assert yp.fx_ticker("USD") == "GBPUSD=X"
+    assert yp.fx_ticker("eur") == "GBPEUR=X"
+
+
+def test_screener_uses_fx_for_us_sizing(monkeypatch):
+    index = _trend_bars(start=60, end=108)
+
+    class _FXProvider(_FakeProvider):
+        def fx_per_gbp(self, currency):
+            return 1.25  # £1 = $1.25
+
+    funds = Fundamentals(2e9, 1.1, datetime(2030, 1, 1, tzinfo=timezone.utc), "USD")
+    prov = _FXProvider(_qualifying_bars(), index, funds)
+    captured = {}
+
+    def _capture(sym, bars, idx, f, *, account=500.0, now=None, fx_per_gbp=1.0):
+        captured["fx"] = fx_per_gbp
+        return ScreenResult(sym, False)
+
+    monkeypatch.setattr(screen, "evaluate_symbol", _capture)
+    Screener(prov).scan(["AAPL"])
+    assert captured["fx"] == 1.25
+
+
+def test_fx_applied_in_sizing():
+    # £5 risk at £1=$1.25 -> $6.25 budget; entry $100 stop $95 (risk $5/sh)
+    # shares_by_risk = floor(6.25/5, 2) = 1.25 ; exposure cap £100*1.25=$125/100=1.25
+    p = size_trade_gbp(100.0, 95.0, fx_per_gbp=1.25, max_position_pct=10.0)
+    assert p is not None and p.shares == 1.25

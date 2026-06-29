@@ -1,21 +1,22 @@
-"""Pure exit-management decisions for open positions (Phase 1 fix).
+"""Pure exit-management decisions for open positions.
 
 The news bot previously had NO exit backstop: a position could only close if
 its bracket stop or take-profit child filled. Anything that drifted sideways
-stayed open forever, which is why the paper account showed 0 closed trades.
+stayed open forever (the historical "0 closed trades" bug).
 
-This module adds two deterministic rules, expressed as a pure function so
+`decide_exit` adds three deterministic rules, expressed as a pure function so
 they unit-test without a broker:
 
-  1. Break-even stop: once price reaches +1R (one unit of initial risk),
-     move the stop up to the entry price so the trade can't turn into a loss.
-  2. Hard time-stop: if the position has been open `max_holding_days` trading
-     days, close it at market regardless of price.
+  1. Hard time-stop: if open `max_holding_days` trading days, close at market.
+  2. Break-even stop: at +1R, raise the stop to entry (can't turn into a loss).
+  3. Trailing stop: at +1.5R and beyond, trail the stop to `trail_pct` below
+     the current price, ratcheting UP only (never lowered, never below entry).
 
-`decide_exit` returns an ExitAction describing WHAT to do; the broker wiring
-(brokebyte.monitor.exit_manager) is responsible for executing it. Keeping the
-decision pure means the risky part (live order changes) is thin and the logic
-is fully covered by tests.
+Break-even and trailing both surface as a MOVE_BREAKEVEN action carrying the
+new stop price (the broker wiring treats any stop-raise identically); the
+`reason` string distinguishes them. The move only fires when the proposed
+stop is strictly better than the live stop, so calling this every cycle is
+idempotent.
 """
 
 from __future__ import annotations
@@ -27,7 +28,7 @@ import numpy as np
 
 # Action kinds
 NONE = "none"
-MOVE_BREAKEVEN = "move_breakeven"
+MOVE_BREAKEVEN = "move_breakeven"   # any upward stop move (break-even or trailing)
 CLOSE_TIME_STOP = "close_time_stop"
 
 
@@ -47,6 +48,34 @@ def trading_days_held(opened_at: datetime, now: datetime) -> int:
     return int(np.busday_count(start, end))
 
 
+def _target_stop(
+    side: str,
+    entry_price: float,
+    risk_per_share: float,
+    current_price: float,
+    breakeven_at_r: float,
+    trail_at_r: float,
+    trail_pct: float,
+) -> tuple[float, str] | None:
+    """Return (proposed_stop, reason) for the current price, or None if price
+    hasn't reached the break-even threshold yet. Trailing never sets a stop
+    worse than break-even (entry)."""
+    if side == "buy":
+        if current_price >= entry_price + trail_at_r * risk_per_share:
+            trailed = round(current_price * (1 - trail_pct), 2)
+            return max(entry_price, trailed), f"trailing stop ({trail_pct:.0%} below price, >={trail_at_r}R)"
+        if current_price >= entry_price + breakeven_at_r * risk_per_share:
+            return entry_price, "reached +1R: move stop to break-even"
+        return None
+    else:  # sell / short
+        if current_price <= entry_price - trail_at_r * risk_per_share:
+            trailed = round(current_price * (1 + trail_pct), 2)
+            return min(entry_price, trailed), f"trailing stop ({trail_pct:.0%} above price, >={trail_at_r}R)"
+        if current_price <= entry_price - breakeven_at_r * risk_per_share:
+            return entry_price, "reached +1R: move stop to break-even"
+        return None
+
+
 def decide_exit(
     *,
     side: str,                  # "buy" (long) or "sell" (short)
@@ -58,13 +87,14 @@ def decide_exit(
     now: datetime,
     max_holding_days: int = 10,
     breakeven_at_r: float = 1.0,
+    trail_at_r: float = 1.5,
+    trail_pct: float = 0.02,
 ) -> ExitAction:
-    """Return the exit action for one open position.
+    """Return the exit action for one open position. Time-stop takes precedence
+    over any stop move."""
+    if side not in ("buy", "sell"):
+        raise ValueError(f"side must be 'buy' or 'sell', got {side!r}")
 
-    Time-stop takes precedence over the break-even move. The break-even move
-    only fires once (when the live stop is still worse than entry), so calling
-    this every reconcile cycle is idempotent.
-    """
     # --- 1. Time-stop (highest priority) ---
     if trading_days_held(opened_at, now) >= max_holding_days:
         return ExitAction(
@@ -72,30 +102,18 @@ def decide_exit(
             reason=f"time-stop: held >= {max_holding_days} trading days",
         )
 
-    # --- 2. Break-even stop ---
     risk_per_share = abs(entry_price - stop_price)
     if risk_per_share <= 0:
         return ExitAction(kind=NONE, reason="degenerate risk (entry == stop)")
 
-    if side == "buy":
-        reached_1r = current_price >= entry_price + breakeven_at_r * risk_per_share
-        stop_below_entry = current_stop_price < entry_price
-        if reached_1r and stop_below_entry:
-            return ExitAction(
-                kind=MOVE_BREAKEVEN,
-                reason="reached +1R: move stop to break-even",
-                new_stop_price=round(entry_price, 2),
-            )
-    elif side == "sell":
-        reached_1r = current_price <= entry_price - breakeven_at_r * risk_per_share
-        stop_above_entry = current_stop_price > entry_price
-        if reached_1r and stop_above_entry:
-            return ExitAction(
-                kind=MOVE_BREAKEVEN,
-                reason="reached +1R: move stop to break-even",
-                new_stop_price=round(entry_price, 2),
-            )
-    else:
-        raise ValueError(f"side must be 'buy' or 'sell', got {side!r}")
+    # --- 2/3. Break-even / trailing stop raise ---
+    target = _target_stop(side, entry_price, risk_per_share, current_price,
+                          breakeven_at_r, trail_at_r, trail_pct)
+    if target is not None:
+        proposed, reason = target
+        better = proposed > current_stop_price if side == "buy" else proposed < current_stop_price
+        if better:
+            return ExitAction(kind=MOVE_BREAKEVEN, reason=reason,
+                              new_stop_price=round(proposed, 2))
 
     return ExitAction(kind=NONE)

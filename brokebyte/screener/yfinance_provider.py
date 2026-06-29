@@ -34,6 +34,11 @@ def _period_for(lookback_days: int) -> str:
     return "5y"
 
 
+def fx_ticker(currency: str) -> str:
+    """yfinance FX symbol giving units of `currency` per 1 GBP (e.g. GBPUSD=X)."""
+    return f"GBP{currency.upper()}=X"
+
+
 def normalize_bars(raw: pd.DataFrame, currency: str | None) -> pd.DataFrame:
     """yfinance OHLCV frame -> oldest-first lowercase open/high/low/close/volume.
     Divides price columns by 100 for pence-quoted (GBp) instruments."""
@@ -52,25 +57,18 @@ def normalize_bars(raw: pd.DataFrame, currency: str | None) -> pd.DataFrame:
     return df
 
 
-def _get(obj, key):
-    """Retrieve a value from a dict or yfinance FastInfo object."""
-    try:
-        return getattr(obj, key)
-    except Exception:
-        pass
-    try:
-        return obj[key]
-    except Exception:
-        return None
-
-
 def extract_currency(fast_info) -> str | None:
-    v = _get(fast_info, "currency")
-    return str(v) if v else None
+    try:
+        return fast_info.get("currency")
+    except Exception:
+        return getattr(fast_info, "currency", None)
 
 
 def extract_market_cap(fast_info) -> float | None:
-    v = _get(fast_info, "market_cap") or _get(fast_info, "marketCap")
+    try:
+        v = fast_info.get("market_cap")
+    except Exception:
+        v = getattr(fast_info, "market_cap", None)
     return float(v) if v else None
 
 
@@ -156,3 +154,15 @@ class YFinanceProvider:
             next_earnings=extract_next_earnings(calendar),
             currency="GBP" if currency in ("GBp", "GBP") else (currency or "USD"),
         )
+
+    def fx_per_gbp(self, currency: str) -> float | None:
+        """Units of `currency` per £1 (1.0 for GBP). None if the rate is
+        unavailable — callers fall back and flag the size as FX-pending."""
+        if currency.upper() == "GBP":
+            return 1.0
+        try:
+            fast = self._ticker(fx_ticker(currency)).fast_info
+            rate = fast.get("last_price") if hasattr(fast, "get") else getattr(fast, "last_price", None)
+            return float(rate) if rate else None
+        except Exception:
+            return None

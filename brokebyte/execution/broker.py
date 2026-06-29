@@ -12,15 +12,22 @@ from alpaca.trading.client import TradingClient
 from alpaca.common.enums import Sort
 from alpaca.trading.enums import OrderSide, OrderStatus, OrderType, QueryOrderStatus
 from alpaca.trading.models import Order
-from alpaca.trading.requests import GetOrderByIdRequest, GetOrdersRequest, ReplaceOrderRequest
-
-_NESTED = GetOrderByIdRequest(nested=True)
+from alpaca.trading.requests import (
+    GetOrderByIdRequest,
+    GetOrdersRequest,
+    ReplaceOrderRequest,
+)
 
 from brokebyte.common import FilledOrder
 from brokebyte.config import Config
 from brokebyte.risk.kill_switch import KillSwitchResult, execute_kill_switch
 from brokebyte.risk.orders import build_bracket_order
 from brokebyte.risk.sizing import PositionPlan
+
+# alpaca-py >=0.43: get_order_by_id takes filter=GetOrderByIdRequest(nested=True),
+# NOT a bare nested=True kwarg (that raises TypeError). Reused by every method
+# that needs the bracket legs.
+_NESTED = GetOrderByIdRequest(nested=True)
 
 
 class Broker:
@@ -136,9 +143,8 @@ class Broker:
         return None
 
     # -- Active exit management (used by brokebyte.monitor.exit_manager) -------
-    # INTEGRATION NOTE: verify these four against the paper account before
-    # relying on them in production (esp. how flatten interacts with the open
-    # bracket legs). Method names confirmed against alpaca-py.
+    # Live-verified on the paper account 2026-06-28 (NOK time-stop close,
+    # zero orphan orders). All three methods below use filter=_NESTED.
 
     def get_current_price(self, symbol: str) -> float | None:
         """Latest price for an OPEN position, or None if no position exists."""
@@ -178,7 +184,9 @@ class Broker:
     def flatten(self, symbol: str, order_id: str) -> FilledOrder | None:
         """Force-close a position at market for the time-stop. Cancels the
         bracket's open legs first so they don't fight the market close, then
-        closes the position. Returns the close fill if available this cycle."""
+        closes the position. Returns the close fill if available this cycle
+        (often None: close_position returns PENDING_NEW before the fill, and
+        the reconciler books the outcome on the next cycle)."""
         try:
             order = self._client.get_order_by_id(order_id, filter=_NESTED)
             for leg in (order.legs or []):

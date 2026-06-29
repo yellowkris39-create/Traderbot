@@ -111,9 +111,10 @@ def test_breakeven_moves_at_1r_long():
 
 
 def test_breakeven_idempotent_when_stop_already_at_entry():
+    # price between +1R (102) and +1.5R (103): break-even target == entry == live stop
     a = exits.decide_exit(
         side="buy", entry_price=100, stop_price=98, current_stop_price=100,
-        current_price=105, opened_at=datetime(2026, 6, 10), now=datetime(2026, 6, 12),
+        current_price=102.5, opened_at=datetime(2026, 6, 10), now=datetime(2026, 6, 12),
     )
     assert a.kind == exits.NONE
 
@@ -186,3 +187,42 @@ def test_sizing_default_exposure_cap_binds():
 def test_sizing_rejects_bad_stop():
     assert size_trade_gbp(50.0, 51.0) is None
     assert size_trade_gbp(-1.0, -2.0) is None
+
+
+def test_trailing_stop_raises_above_breakeven_long():
+    # entry 100, stop 98 (risk 2). price 110 -> +5R, well past 1.5R.
+    # trail target = max(100, 110*0.98=107.8) = 107.8, above live stop 100.
+    a = exits.decide_exit(
+        side="buy", entry_price=100, stop_price=98, current_stop_price=100,
+        current_price=110, opened_at=datetime(2026, 6, 10), now=datetime(2026, 6, 12),
+    )
+    assert a.kind == exits.MOVE_BREAKEVEN and a.new_stop_price == 107.8
+    assert "trailing" in a.reason
+
+
+def test_trailing_stop_ratchets_only_up_long():
+    # live stop already at 108; price 110 -> trail 107.8 is NOT better -> no move.
+    a = exits.decide_exit(
+        side="buy", entry_price=100, stop_price=98, current_stop_price=108,
+        current_price=110, opened_at=datetime(2026, 6, 10), now=datetime(2026, 6, 12),
+    )
+    assert a.kind == exits.NONE
+
+
+def test_trailing_stop_never_below_entry_long():
+    # price exactly at 1.5R (103): trail 103*0.98=100.94 > entry 100 -> uses 100.94
+    a = exits.decide_exit(
+        side="buy", entry_price=100, stop_price=98, current_stop_price=100,
+        current_price=103, opened_at=datetime(2026, 6, 10), now=datetime(2026, 6, 12),
+    )
+    assert a.kind == exits.MOVE_BREAKEVEN and a.new_stop_price >= 100
+
+
+def test_trailing_stop_short_side():
+    # short: entry 100 stop 102 (risk 2). price 90 -> past 1.5R down.
+    # trail target = min(100, 90*1.02=91.8) = 91.8, below live stop 100.
+    a = exits.decide_exit(
+        side="sell", entry_price=100, stop_price=102, current_stop_price=100,
+        current_price=90, opened_at=datetime(2026, 6, 10), now=datetime(2026, 6, 12),
+    )
+    assert a.kind == exits.MOVE_BREAKEVEN and a.new_stop_price == 91.8
