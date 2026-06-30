@@ -83,3 +83,35 @@ def test_backtest_symbol_runs_and_returns_list():
     assert isinstance(trades, list)
     m = bt.compute_metrics(trades)
     assert m.trades == len(trades)
+
+
+def test_partition_trades_by_entry_idx():
+    trades = [
+        bt.BacktestTrade("A", 5, 100, 95, 110, 8, 110, "target", 2.0, 3),
+        bt.BacktestTrade("A", 50, 100, 95, 110, 55, 95, "stop", -1.0, 5),
+    ]
+    is_, oos = bt.partition_trades(trades, split_idx=20)
+    assert len(is_) == 1 and is_[0].entry_idx == 5
+    assert len(oos) == 1 and oos[0].entry_idx == 50
+
+
+def test_target_rr_sets_target_distance():
+    # higher target_rr => target further from entry => same risk, bigger win R
+    bars = _bars([(100, 100, 100, 100),
+                  (100, 109, 99, 105),
+                  (105, 116, 104, 115)])   # high 116 reaches a 3R target (115) but not below
+    t2 = bt.simulate_trade(bars, 0, 100, 95, 100 + 2 * 5)   # 2R target=110
+    t3 = bt.simulate_trade(bars, 0, 100, 95, 100 + 3 * 5)   # 3R target=115
+    assert t2.exit_reason == "target" and t2.r_multiple == 2.0
+    assert t3.exit_reason == "target" and t3.r_multiple == 3.0
+
+
+def test_metrics_avg_win_loss():
+    trades = [
+        bt.BacktestTrade("A", 0, 100, 95, 110, 3, 110, "target", 2.0, 3),
+        bt.BacktestTrade("A", 4, 100, 95, 110, 6, 95, "stop", -1.0, 2),
+        bt.BacktestTrade("A", 7, 100, 95, 110, 9, 100, "time_stop", 0.0, 2),
+    ]
+    m = bt.compute_metrics(trades)
+    assert m.avg_win_r == 2.0           # only the +2R win
+    assert m.avg_loss_r == -0.5         # mean of -1.0 and 0.0

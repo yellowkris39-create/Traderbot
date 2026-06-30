@@ -2,37 +2,22 @@
 
 Constituents change over time and can't be hand-maintained accurately, so we
 pull them from Wikipedia at runtime (pandas.read_html) and cache to JSON. The
-live fetch runs on the SERVER (its venv has network); my build sandbox can't
-reach Wikipedia, so only the pure parsing/normalisation is unit-tested here.
+live fetch runs on the SERVER (its venv has network).
 
     python -m brokebyte.screener.universe_fetch        # refresh the cache
 
-Ticker normalisation for yfinance:
-  * US: dots become hyphens (BRK.B -> BRK-B).
-  * LSE: dots become hyphens and a '.L' suffix is added (BT.A -> BT-A.L).
-On any fetch failure we DON'T overwrite the cache; callers fall back to the
-starter universe.
+Ticker normalisation for yfinance: US dots -> hyphens (BRK.B -> BRK-B); LSE
+dots -> hyphens plus a '.L' suffix (BT.A -> BT-A.L). On fetch failure we don't
+overwrite the cache; callers fall back to the starter universe.
 """
 
 from __future__ import annotations
 
 import json
-import urllib.request
 from datetime import datetime, timezone
-from io import StringIO
 from pathlib import Path
 
 import pandas as pd
-
-_HEADERS = {"User-Agent": "Mozilla/5.0 (BrokeByte universe fetch)"}
-
-
-def _read_html_ua(url: str) -> list[pd.DataFrame]:
-    """pd.read_html with a User-Agent so Wikipedia doesn't 403."""
-    req = urllib.request.Request(url, headers=_HEADERS)
-    with urllib.request.urlopen(req, timeout=30) as resp:
-        html = resp.read().decode("utf-8")
-    return pd.read_html(StringIO(html))
 
 SP500_URL = "https://en.wikipedia.org/wiki/List_of_S%26P_500_companies"
 FTSE100_URL = "https://en.wikipedia.org/wiki/FTSE_100_Index"
@@ -53,17 +38,17 @@ def normalize_lse_ticker(t: str) -> str:
     if base.endswith(".L"):
         base = base[:-2]
     base = base.replace(".", "-")
-    return f"{base}.L"
+    return base + ".L"
 
 
-def _pick_column(df: pd.DataFrame, candidates: tuple[str, ...]) -> str | None:
+def _pick_column(df: pd.DataFrame, candidates: tuple) -> str | None:
     for c in candidates:
         if c in df.columns:
             return c
     return None
 
 
-def parse_tickers(tables: list[pd.DataFrame], candidates: tuple[str, ...]) -> list[str]:
+def parse_tickers(tables: list, candidates: tuple) -> list:
     """Return the raw ticker column from the first table that has one of
     `candidates`. Pure — operates on already-fetched DataFrames."""
     for df in tables:
@@ -73,16 +58,16 @@ def parse_tickers(tables: list[pd.DataFrame], candidates: tuple[str, ...]) -> li
     return []
 
 
-def fetch_us() -> list[str]:
-    tables = _read_html_ua(SP500_URL)
+def fetch_us() -> list:
+    tables = pd.read_html(SP500_URL)
     return [normalize_us_ticker(t) for t in parse_tickers(tables, _US_COLS)]
 
 
-def fetch_lse() -> list[str]:
-    out: list[str] = []
+def fetch_lse() -> list:
+    out = []
     for url in (FTSE100_URL, FTSE250_URL):
         try:
-            tables = _read_html_ua(url)
+            tables = pd.read_html(url)
             out.extend(normalize_lse_ticker(t) for t in parse_tickers(tables, _LSE_COLS))
         except Exception:
             continue
@@ -90,17 +75,17 @@ def fetch_lse() -> list[str]:
 
 
 def refresh(path: Path = DEFAULT_CACHE) -> dict:
-    """Fetch + cache. Returns the data dict written. Partial success is kept;
-    if BOTH lists are empty the cache is left untouched."""
+    """Fetch + cache. Partial success is kept; if BOTH lists are empty the cache
+    is left untouched."""
     us, lse = [], []
     try:
         us = sorted(set(fetch_us()))
     except Exception as exc:  # noqa: BLE001
-        print(f"[universe_fetch] US fetch failed: {exc}")
+        print("[universe_fetch] US fetch failed:", exc)
     try:
         lse = sorted(set(fetch_lse()))
     except Exception as exc:  # noqa: BLE001
-        print(f"[universe_fetch] LSE fetch failed: {exc}")
+        print("[universe_fetch] LSE fetch failed:", exc)
 
     if not us and not lse:
         print("[universe_fetch] nothing fetched; cache left unchanged")
@@ -108,7 +93,7 @@ def refresh(path: Path = DEFAULT_CACHE) -> dict:
 
     data = {"fetched_at": datetime.now(timezone.utc).isoformat(), "us": us, "lse": lse}
     Path(path).write_text(json.dumps(data, indent=2))
-    print(f"[universe_fetch] wrote {len(us)} US + {len(lse)} LSE tickers to {path}")
+    print("[universe_fetch] wrote", len(us), "US +", len(lse), "LSE tickers to", path)
     return data
 
 
