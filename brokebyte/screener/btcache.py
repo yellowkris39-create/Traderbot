@@ -188,7 +188,44 @@ ROUND2_GRID = [
     {"label": "hold20 + no-breakeven", "max_holding_days": 20, "breakeven_at_r": 99.0},
 ]
 
-GRIDS = {"default": DEFAULT_GRID, "hold": HOLD_ROBUSTNESS_GRID, "round2": ROUND2_GRID}
+ROUND3_GRID = [
+    {"label": "hold20 t2R (safe)", "max_holding_days": 20, "target_rr": 2.0},
+    {"label": "hold15 + target3R", "max_holding_days": 15, "target_rr": 3.0},
+    {"label": "hold20 + target3R", "max_holding_days": 20, "target_rr": 3.0},
+    {"label": "hold25 + target3R", "max_holding_days": 25, "target_rr": 3.0},
+    {"label": "hold30 + target3R", "max_holding_days": 30, "target_rr": 3.0},
+]
+
+GRIDS = {"default": DEFAULT_GRID, "hold": HOLD_ROBUSTNESS_GRID,
+         "round2": ROUND2_GRID, "round3": ROUND3_GRID}
+
+# Candidate config under evaluation for go-live.
+CANDIDATE = {"max_holding_days": 20, "target_rr": 3.0}
+
+
+def walk_forward(symbols, cache_dir=DEFAULT_DIR, k=5, *, slippage_pct=0.0, **params):
+    """Split each symbol's trades into k sequential time folds by entry position
+    and report expectancy per fold. A robust edge is positive across MOST folds;
+    an edge carried by one lucky stretch shows up as one big fold and the rest
+    flat/negative. This is the cross-period check the single IS/OOS split can't give."""
+    fold_trades = {i: [] for i in range(k)}
+    for sym in symbols:
+        bars = load_cached_bars(cache_dir, sym)
+        sigs = load_signals(cache_dir, sym)
+        if bars is None or sigs is None or len(bars) == 0:
+            continue
+        n = len(bars)
+        trades = simulate_from_signals(bars, sigs, symbol=sym, **params)
+        if slippage_pct:
+            trades = bt.apply_slippage(trades, slippage_pct)
+        for t in trades:
+            f = min(k - 1, int(t.entry_idx / n * k))
+            fold_trades[f].append(t)
+    lines = ["walk-forward {} folds  params={} slip={}".format(k, params, slippage_pct)]
+    for i in range(k):
+        m = bt.compute_metrics(fold_trades[i])
+        lines.append("  fold {}: n={:4d}  win {:6.1%}  exp {:+.3f}R  total {:+.1f}R".format(i, m.trades, m.win_rate, m.expectancy_r, m.total_r))
+    return "\n".join(lines)
 
 
 def sweep(symbols, cache_dir: Path = DEFAULT_DIR, grid=None, *, train_frac=0.65, slippage_pct=0.0) -> str:
@@ -235,5 +272,8 @@ if __name__ == "__main__":
         gridname = next((a for a in sys.argv[2:] if not a.startswith("-")), "default")
         slip = next((float(a.split("=")[1]) for a in sys.argv[2:] if a.startswith("--slip=")), 0.0)
         print(sweep(syms, grid=GRIDS.get(gridname, DEFAULT_GRID), slippage_pct=slip))
+    elif cmd == "wf":
+        slip = next((float(a.split("=")[1]) for a in sys.argv[2:] if a.startswith("--slip=")), 0.0)
+        print(walk_forward(syms, slippage_pct=slip, **CANDIDATE))
     else:
         print(report(syms))

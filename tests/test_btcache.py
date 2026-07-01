@@ -65,7 +65,7 @@ def test_signal_cache_roundtrip_and_sweep(tmp_path):
 
 
 def test_named_grids_present():
-    assert set(btcache.GRIDS) == {"default", "hold", "round2"}
+    assert {"default", "hold", "round2", "round3"} <= set(btcache.GRIDS)
     assert any(v.get("max_holding_days") == 20 for v in btcache.HOLD_ROBUSTNESS_GRID)
 
 
@@ -77,3 +77,18 @@ def test_sweep_with_slippage_runs(tmp_path):
     btcache.build_signal_cache(["AAPL"], tmp_path)
     out = btcache.sweep(["AAPL"], tmp_path, grid=btcache.HOLD_ROBUSTNESS_GRID, slippage_pct=0.001)
     assert "slippage" in out and out.count("\n") == len(btcache.HOLD_ROBUSTNESS_GRID)
+
+
+def test_round3_grid_and_candidate():
+    assert "round3" in btcache.GRIDS
+    assert btcache.CANDIDATE == {"max_holding_days": 20, "target_rr": 3.0}
+
+
+def test_walk_forward_reports_k_folds(tmp_path):
+    bars = _series(n=320, start=40, end=130)
+    idx = _series(n=320, start=100, end=100)
+    btcache.save_bars(tmp_path, "AAPL", bars)
+    btcache.save_bars(tmp_path, "SPY", idx)
+    btcache.build_signal_cache(["AAPL"], tmp_path)
+    out = btcache.walk_forward(["AAPL"], tmp_path, k=5, **btcache.CANDIDATE)
+    assert out.count("fold ") == 5
