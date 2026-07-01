@@ -193,3 +193,21 @@ if __name__ == "__main__":
     args = [a for a in sys.argv[1:] if not a.startswith("-")]
     syms = args or load_universe()
     print(run_cli(syms))
+
+
+def apply_slippage(trades, slippage_pct):
+    """Return trades with r_multiple reduced for round-trip slippage: the buy
+    entry slips up and the sell exit slips down, each by slippage_pct of price.
+    Cost in R = 2*slippage_pct*entry_price / risk_per_share. On a small account
+    with tight risk-per-share this is NON-trivial, so the go-live number must
+    include it."""
+    from dataclasses import replace
+    out = []
+    for t in trades:
+        risk = t.entry_price - t.stop_price
+        if risk <= 0:
+            out.append(t)
+            continue
+        cost_r = (2.0 * slippage_pct * t.entry_price) / risk
+        out.append(replace(t, r_multiple=t.r_multiple - cost_r))
+    return out

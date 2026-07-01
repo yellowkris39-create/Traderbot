@@ -173,14 +173,35 @@ DEFAULT_GRID = [
     {"label": "looser-trail-3pct", "trail_pct": 0.03},
 ]
 
+HOLD_ROBUSTNESS_GRID = [
+    {"label": "hold-10d (orig)", "max_holding_days": 10},
+    {"label": "hold-15d", "max_holding_days": 15},
+    {"label": "hold-20d", "max_holding_days": 20},
+    {"label": "hold-25d", "max_holding_days": 25},
+    {"label": "hold-30d", "max_holding_days": 30},
+]
 
-def sweep(symbols, cache_dir: Path = DEFAULT_DIR, grid=None, *, train_frac=0.65) -> str:
+ROUND2_GRID = [
+    {"label": "hold20 baseline", "max_holding_days": 20},
+    {"label": "hold20 + target3R", "max_holding_days": 20, "target_rr": 3.0},
+    {"label": "hold20 + trail3pct", "max_holding_days": 20, "trail_pct": 0.03},
+    {"label": "hold20 + no-breakeven", "max_holding_days": 20, "breakeven_at_r": 99.0},
+]
+
+GRIDS = {"default": DEFAULT_GRID, "hold": HOLD_ROBUSTNESS_GRID, "round2": ROUND2_GRID}
+
+
+def sweep(symbols, cache_dir: Path = DEFAULT_DIR, grid=None, *, train_frac=0.65, slippage_pct=0.0) -> str:
     """Run each variant against the SIGNAL cache (fast). Decide on OOS exp."""
     grid = grid or DEFAULT_GRID
-    lines = ["variant                     |  OOS n  OOS win  OOS exp  | OVR exp  OVR total"]
+    tag = " (slippage {:.2%}/side)".format(slippage_pct) if slippage_pct else ""
+    lines = ["variant                     |  OOS n  OOS win  OOS exp  | OVR exp  OVR total" + tag]
     for variant in grid:
         params = {k: v for k, v in variant.items() if k != "label"}
         all_t, is_t, oos_t = backtest_from_signals(symbols, cache_dir, train_frac=train_frac, **params)
+        if slippage_pct:
+            all_t = bt.apply_slippage(all_t, slippage_pct)
+            oos_t = bt.apply_slippage(oos_t, slippage_pct)
         o = bt.compute_metrics(oos_t)
         a = bt.compute_metrics(all_t)
         lines.append("{:27} | {:5d}  {:6.1%}  {:+6.3f}R | {:+6.3f}R  {:+6.1f}R".format(variant.get("label", "?"), o.trades, o.win_rate, o.expectancy_r, a.expectancy_r, a.total_r))
@@ -211,6 +232,8 @@ if __name__ == "__main__":
     elif cmd == "signals":
         build_signal_cache(syms)
     elif cmd == "sweep":
-        print(sweep(syms))
+        gridname = next((a for a in sys.argv[2:] if not a.startswith("-")), "default")
+        slip = next((float(a.split("=")[1]) for a in sys.argv[2:] if a.startswith("--slip=")), 0.0)
+        print(sweep(syms, grid=GRIDS.get(gridname, DEFAULT_GRID), slippage_pct=slip))
     else:
         print(report(syms))

@@ -115,3 +115,15 @@ def test_metrics_avg_win_loss():
     m = bt.compute_metrics(trades)
     assert m.avg_win_r == 2.0           # only the +2R win
     assert m.avg_loss_r == -0.5         # mean of -1.0 and 0.0
+
+
+def test_apply_slippage_reduces_r():
+    # entry 100, stop 95 (risk 5). 0.1%/side => cost_R = 2*0.001*100/5 = 0.04R.
+    t = bt.BacktestTrade("A", 0, 100, 95, 110, 3, 110, "target", 2.0, 3)
+    adj = bt.apply_slippage([t], 0.001)[0]
+    assert round(adj.r_multiple, 4) == round(2.0 - 0.04, 4)
+
+
+def test_apply_slippage_zero_is_noop():
+    t = bt.BacktestTrade("A", 0, 100, 95, 110, 3, 110, "target", 2.0, 3)
+    assert bt.apply_slippage([t], 0.0)[0].r_multiple == 2.0

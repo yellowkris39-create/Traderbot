@@ -62,3 +62,18 @@ def test_signal_cache_roundtrip_and_sweep(tmp_path):
     out = btcache.sweep(["AAPL"], tmp_path)
     assert out.count("\n") == len(btcache.DEFAULT_GRID)  # header + row per variant
     assert "baseline" in out
+
+
+def test_named_grids_present():
+    assert set(btcache.GRIDS) == {"default", "hold", "round2"}
+    assert any(v.get("max_holding_days") == 20 for v in btcache.HOLD_ROBUSTNESS_GRID)
+
+
+def test_sweep_with_slippage_runs(tmp_path):
+    bars = _series(n=300, start=40, end=120)
+    idx = _series(n=300, start=100, end=100)
+    btcache.save_bars(tmp_path, "AAPL", bars)
+    btcache.save_bars(tmp_path, "SPY", idx)
+    btcache.build_signal_cache(["AAPL"], tmp_path)
+    out = btcache.sweep(["AAPL"], tmp_path, grid=btcache.HOLD_ROBUSTNESS_GRID, slippage_pct=0.001)
+    assert "slippage" in out and out.count("\n") == len(btcache.HOLD_ROBUSTNESS_GRID)
