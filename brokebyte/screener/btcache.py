@@ -24,6 +24,7 @@ import pandas as pd
 
 from brokebyte.screener import backtest as bt
 from brokebyte.screener import screen
+from brokebyte.analysis import indicators as ind
 from brokebyte.screener.data import Fundamentals
 from brokebyte.screener.screen import evaluate_symbol, index_symbol_for
 
@@ -79,14 +80,30 @@ def build_cache(symbols, cache_dir: Path = DEFAULT_DIR, provider=None, lookback_
 
 # --- Signal detection (the expensive, exit-independent part) ---------------
 
-def find_signals(bars, index_bars) -> list:
+def _index_uptrend_at(index_bars, pos) -> bool:
+    """Point-in-time regime: is the index above its own 200-day SMA at position
+    `pos`? Mirrors Screener.index_regime_ok, which the LIVE bot applies but the
+    old backtest omitted."""
+    if pos < 200 or pos >= len(index_bars):
+        return False
+    window = index_bars.iloc[: pos + 1]
+    return float(index_bars["close"].iloc[pos]) > ind.sma(window, 200)
+
+
+def find_signals(bars, index_bars, *, apply_regime=True) -> list:
     """Every qualifying entry as (entry_idx, entry_price, stop_price), WITHOUT
-    overlap-skipping. Entry = next bar open; stop = swing-low plan stop. These
-    depend only on the rules, not on the exit knobs — so they're computed once
-    and reused across all exit variants."""
+    overlap-skipping. When apply_regime=True (default, matching LIVE), a signal
+    is skipped if the index is below its 200-day SMA at that bar. Bars and index
+    are aligned by trading-day offset from the end (same assumption as the
+    relative-strength check)."""
     out = []
     n = len(bars)
+    m = len(index_bars)
     for t in range(screen.MIN_BARS, n - 1):
+        if apply_regime:
+            pos = (m - 1) - ((n - 1) - t)
+            if not _index_uptrend_at(index_bars, pos):
+                continue
         res = evaluate_symbol("?", bars.iloc[: t + 1], index_bars.iloc[: t + 1], _DUMMY_FUNDS, skip_universe=True)
         if not res.passed or res.plan is None:
             continue
