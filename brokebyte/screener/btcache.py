@@ -291,6 +291,12 @@ if __name__ == "__main__":
         print(sweep(syms, grid=GRIDS.get(gridname, DEFAULT_GRID), slippage_pct=slip))
     elif cmd == "wf":
         slip = next((float(a.split("=")[1]) for a in sys.argv[2:] if a.startswith("--slip=")), 0.0)
-        print(walk_forward(syms, slippage_pct=slip, **CANDIDATE))
+        cfg = dict(CANDIDATE)
+        for a in sys.argv[2:]:
+            if a.startswith("--target="):
+                cfg["target_rr"] = float(a.split("=")[1])
+            if a.startswith("--hold="):
+                cfg["max_holding_days"] = int(a.split("=")[1])
+        print(walk_forward(syms, slippage_pct=slip, **cfg))
     else:
         print(report(syms))

@@ -27,6 +27,10 @@ def format_alert(result: ScreenResult, *, index: int | None = None) -> str:
         f"  Target (2:1): {p.take_profit_price:.2f}",
         f"  Position:     {p.shares:g} shares  (~{p.notional:.2f}, risk ~{p.risk_amount:.2f})"
         + ("  [exposure-capped]" if p.exposure_capped else ""),
+        "  Manage (validated plan):",
+        f"    - move stop to break-even ({p.entry_price:.2f}) at +1R ({p.entry_price + p.risk_per_share:.2f})",
+        f"    - trail 2% below high after +1.5R ({p.entry_price + 1.5 * p.risk_per_share:.2f})",
+        "    - exit by ~20 trading days if neither target nor stop is hit",
         "  Key risks:",
         *[f"    - {r}" for r in result.risks],
     ]
