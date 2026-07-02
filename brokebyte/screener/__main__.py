@@ -7,6 +7,11 @@
 
 Intended to run once daily after both markets close (see deploy/
 brokebyte-screener.timer). Reads webhook + account config from .env.
+
+FAILURE ALERTING: any crash posts "screener FAILED: ..." to the same webhook
+and re-raises (non-zero exit, so systemd records the failure too). Added after
+the 2026-06/07 incident where a broken build crashed nightly for days and the
+silence was indistinguishable from a no-setups day.
 """
 
 from __future__ import annotations
@@ -46,7 +51,8 @@ def _journal(results, log_dir: str) -> None:
             }) + "\n")
 
 
-def main(argv: list[str] | None = None) -> None:
+def run(argv: list[str] | None = None) -> None:
+    """The actual scan (unwrapped). Raises on any failure."""
     argv = argv if argv is not None else sys.argv[1:]
     include_us = "--lse" not in argv
     include_lse = "--us" not in argv
@@ -64,6 +70,22 @@ def main(argv: list[str] | None = None) -> None:
     _journal(results, log_dir)
     if do_send:
         alerts.send(message)
+
+
+def main(argv: list[str] | None = None) -> None:
+    """Wrap `run` so a crash is LOUD: post a FAILED alert to the webhook, then
+    re-raise for a non-zero exit. A healthy quiet day still sends the normal
+    'no qualifying setups today' digest — total silence now always means the
+    webhook itself is down."""
+    try:
+        run(argv)
+    except Exception as exc:  # noqa: BLE001
+        detail = "{}: {}".format(type(exc).__name__, exc)
+        try:
+            alerts.send("⚠ BrokeByte screener FAILED (no scan ran): " + detail[:500])
+        except Exception:  # noqa: BLE001
+            pass
+        raise
 
 
 if __name__ == "__main__":

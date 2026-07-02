@@ -168,4 +168,9 @@ class YFinanceProvider:
         unavailable — callers fall back and flag the size as FX-pending."""
         if currency.upper() == "GBP":
             return 1.0
-        t
+        try:
+            fast = self._ticker(fx_ticker(currency)).fast_info
+            rate = _fi_get(fast, "last_price") or _fi_get(fast, "lastPrice")
+            return float(rate) if rate else None
+        except Exception:
+            return None

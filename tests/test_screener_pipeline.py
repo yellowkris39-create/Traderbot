@@ -143,7 +143,8 @@ def _passing_result():
 def test_format_alert_has_all_eight_fields():
     text = alerts.format_alert(_passing_result())
     for needle in ("AAPL", "Why it matches", "Entry:", "Stop-loss:",
-                   "Target (2:1):", "Position:", "Key risks:"):
+                   "Target (2:1):", "Position:", "Manage (validated plan)",
+                   "break-even", "trail 2%", "20 trading days", "Key risks:"):
         assert needle in text
 
 

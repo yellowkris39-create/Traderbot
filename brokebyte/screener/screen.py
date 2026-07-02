@@ -195,9 +195,9 @@ class Screener:
                 bars = self._provider.daily_bars(sym)
                 funds = self._provider.fundamentals(sym)
                 index_bars = self._index_bars(sym)
+                fx = self._fx_per_gbp(funds.currency)
             except Exception:
                 continue
-            fx = self._fx_per_gbp(funds.currency)
             res = evaluate_symbol(sym, bars, index_bars, funds,
                                   account=self._account, now=now, fx_per_gbp=fx)
             if res.passed:

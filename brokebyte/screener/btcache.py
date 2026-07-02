@@ -217,7 +217,7 @@ GRIDS = {"default": DEFAULT_GRID, "hold": HOLD_ROBUSTNESS_GRID,
          "round2": ROUND2_GRID, "round3": ROUND3_GRID}
 
 # Candidate config under evaluation for go-live.
-CANDIDATE = {"max_holding_days": 20, "target_rr": 3.0}
+CANDIDATE = {"max_holding_days": 20, "target_rr": 2.0}  # LOCKED go-live config (2:1 confirmed cross-fold robust)
 
 
 def walk_forward(symbols, cache_dir=DEFAULT_DIR, k=5, *, slippage_pct=0.0, **params):

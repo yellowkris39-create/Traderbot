@@ -1,52 +1,56 @@
-# Claude Code handoff — BrokeByte
+# BrokeByte — HANDOFF (2026-07-02): CRITICAL fix to deploy + verify
 
-All code unit-tested locally (318 tests pass; the 1 local "failure" is a sandbox
-SOCKS-proxy artifact in the anthropic client — passes on the server).
+## 0. CRITICAL — truncated file was COMMITTED & PUSHED (fix is in the working tree)
+Commit `c7e2e7c` accidentally committed a linter-truncated
+`brokebyte/screener/yfinance_provider.py`: `fx_per_gbp` ends in a bare `t`
+(NameError at call time). `Screener.scan()` called `_fx_per_gbp` outside its
+try/except, so the FIRST non-GBP symbol past the regime gate CRASHES the whole
+nightly screener run. If the server pulled c7e2e7c or later (it did — the
+sweep/wf runs used btcache commits after it), the 21:30 UTC screener has been
+failing silently since ~2026-06-28: no Telegram message at all (which looks
+identical to a quiet day if nobody is counting messages).
 
-## STATUS
-- Exit manager + screener verified live on paper (2026-06-28). Repo at 999cd06+.
-- First backtest (18-symbol starter universe, ~1y): 3 trades, 66.7% win, +0.16R
-  expectancy. Mechanically sound but sample far too small to trust — fix = bigger
-  universe (below), then re-run.
+Fixed locally (working tree, NOT committed — stale `.git/index.lock` blocks
+git from the Cowork sandbox; Kris or you must delete it first):
+1. `yfinance_provider.py` restored from `999cd06` (intact fx_per_gbp).
+2. `screen.py`: `fx = self._fx_per_gbp(...)` moved INSIDE the per-symbol
+   try/except (one bad provider response can no longer kill the scan).
+3. NEW `tests/test_yfinance_fx.py`: 4 fx_per_gbp unit tests + a tripwire test
+   that fails if ANY brokebyte function body ends in a bare name / any module
+   lacks a trailing newline (catches the linter-truncation class of bug).
+4. `btcache.py` CANDIDATE target_rr 3.0 -> 2.0 (align tooling with LOCKED
+   config; test_btcache.py updated).
+5. NEW failure-alert wrapper in `brokebyte/screener/__main__.py`: any crash
+   posts "⚠ BrokeByte screener FAILED: ..." to Telegram and re-raises
+   (non-zero exit). NEW `tests/test_screener_main.py` (3 tests).
+Suite: 349 pass locally (+ the 1 known sandbox-proxy fail that passes on real
+machines).
 
-## NEW THIS ROUND (pull these)
-- `brokebyte/screener/universe_fetch.py` — fetches S&P 500 (Wikipedia) + FTSE 350
-  (FTSE 100 + 250) via pandas.read_html, normalises tickers for yfinance
-  (BRK.B->BRK-B; BT.A->BT-A.L), caches to `universe_data.json`. Safe fallback:
-  partial success kept, total failure leaves the cache untouched.
-- `brokebyte/screener/universe.py` — `load_universe()` reads the cache, falls back
-  to the starter set. The screener runner (`__main__.py`) now uses it.
-- `tests/test_universe.py` (7 tests).
-- (Earlier this session, if not yet pulled: backtest.py, screen.py skip_universe,
-  yfinance_provider _fi_get sync, test_backtest_screener.py.)
+## 1. Server steps (in order)
+1. On Kris's machine: `del C:\Users\yello\Desktop\Trader\.git\index.lock`
+   then commit + push the working tree (message suggestion:
+   "Fix truncated fx_per_gbp (committed in c7e2e7c); harden scan; tripwire test").
+2. On the droplet: `cd /root/Trader && git pull && venv/bin/python -m pytest -q`
+   (expect 350 collected, all pass).
+3. VERIFY the truncation is gone on the server:
+   `tail -3 brokebyte/screener/yfinance_provider.py` (must end `return None`).
+4. Check how long the screener was down:
+   `journalctl -u brokebyte-screener --since 2026-06-28 | tail -50`
+   (expect NameError tracebacks). Report the count of failed runs to Kris.
+5. Dry-run: `venv/bin/python -m brokebyte.screener --no-send` (expect a digest,
+   possibly "no qualifying setups today" — that string IS success).
+6. Confirm the timer will fire: `systemctl list-timers | grep screener`.
 
-## TASKS
-1. Pull/merge; `venv/bin/python -m pytest -q` (expect green); commit + push.
-2. **Refresh the universe** (needs server network):
-   ```
-   cd /root/Trader && venv/bin/pip install lxml
-   venv/bin/python -m brokebyte.screener.universe_fetch
-   ```
-   Expect "wrote ~500 US + ~350 LSE tickers". Sanity-check a few entries in
-   `brokebyte/screener/universe_data.json`. Commit the JSON so it's reproducible.
-3. **Re-run the backtest on the full universe** for a meaningful sample:
-   ```
-   venv/bin/python -m brokebyte.screener.backtest $(venv/bin/python -c "from brokebyte.screener.universe import load_universe; print(' '.join(load_universe()))")
-   ```
-   (or just `python -m brokebyte.screener.backtest` if you wire it to load_universe).
-   Report the OVERALL line. With a few hundred names we should get dozens-to-
-   hundreds of trades — THAT expectancy is the real go/no-go number.
-4. The daily screener already uses load_universe(), so once the cache is committed
-   it will screen the full list automatically on the next 21:30 UTC fire.
-5. `git checkout -- requirements.txt` (recurring cosmetic BOM diff).
+## 2. Status recap (unchanged)
+- Config LOCKED: hold-20d, target 2:1, stop 2% below swing low, break-even at
+  +1R, 2% trail after +1.5R, index-200SMA regime gate ON, £5/trade, max 3.
+- Validation: regime-faithful walk-forward ~+0.12R/trade after 10bps,
+  positive 4/5 folds, n=123 — promising, not proof.
+- ONLY remaining gate: 2-week paper demo (15-20 trades) vs the +0.12R
+  benchmark, honoring circuit breakers (3-loss streak, index<200SMA).
+  NOTE: demo clock effectively restarts when the screener is back up.
 
-## CAVEATS
-- universe_fetch depends on Wikipedia table structure; if a fetch returns 0 tickers,
-  the page layout changed — check the column names against _US_COLS / _LSE_COLS.
-- Backtest: entry next-open; stop-before-target on straddle bars; break-even/trail
-  on closes; NO commission/slippage; universe filters skipped → live will be stricter.
-
-## REMAINING (optional)
-- Add commission/slippage to the backtest for realism.
-- Holiday-aware trading-day count for the time-stop (currently weekdays).
-- Wire backtest __main__ to default to load_universe() instead of starter.
+## 3. Housekeeping
+- `git checkout -- requirements.txt` (recurring BOM/CRLF cosmetic diff).
+- `tests/test_screener_pipeline.py` working-tree change (asserts the Manage
+  plan lines in alerts) is legit — include it in the commit.
