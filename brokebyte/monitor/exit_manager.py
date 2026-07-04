@@ -7,6 +7,14 @@ past the 10-trading-day time-stop.
 
 The decision is delegated to the pure `exits.decide_exit`; this module only
 talks to the broker (a Protocol, so the orchestration unit-tests with a fake).
+
+IMPORTANT ORDERING (2026-07-04 fix): the time-stop must NOT require a live
+stop leg. Previously `get_open_stop(...) is None -> continue` skipped the
+whole decision, so any position whose bracket stop had expired or been
+canceled could NEVER be time-stopped — exactly the stuck-forever case this
+module exists to prevent (observed live: 8 open decisions, 0 closed, for
+weeks). Now: no stop leg -> we still evaluate, we just can't do stop-raises
+(logged loudly), while CLOSE_TIME_STOP proceeds via flatten as usual.
 """
 
 from __future__ import annotations
@@ -19,6 +27,22 @@ from brokebyte.common import FilledOrder
 from brokebyte.logging_setup import get_logger
 from brokebyte.memory.store import DecisionStore
 from brokebyte.monitor import exits
+
+# Per-strategy time-stops: the news bot's original 10 trading days, and the
+# validated swing config's 20 (locked 2026-06-28: hold-20d was the single
+# biggest expectancy lever, +0.03R -> +0.28R OOS).
+NEWS_MAX_HOLDING_DAYS = 10
+SWING_MAX_HOLDING_DAYS = 20
+
+
+def _row_strategy(row) -> str:
+    """Read the strategy tag off a decisions row; rows predating the column
+    (or fakes without it) are news-bot rows."""
+    try:
+        value = row["strategy"]
+    except (KeyError, IndexError):
+        return "news"
+    return value or "news"
 
 
 class ExitBrokerLike(Protocol):
@@ -58,15 +82,25 @@ def manage_open_positions(broker: ExitBrokerLike, store: DecisionStore, log=None
         if price is None:
             continue  # position already gone; reconciler books the outcome
 
+        # A missing stop leg must not block the time-stop: fall back to the
+        # PLANNED stop for decide_exit's current_stop_price (stop-raises are
+        # then impossible, but force-closing is not).
         stop = broker.get_open_stop(order_id)
         if stop is None:
-            continue  # no live stop leg to reason about
-        stop_leg_id, current_stop = stop
+            stop_leg_id: str | None = None
+            current_stop = float(row["plan_stop_price"])
+            log.warning("exit_no_live_stop_leg", decision_id=row["id"], symbol=symbol)
+        else:
+            stop_leg_id, current_stop = stop
 
         side = row["plan_side"] or "buy"
-        action = exits.decide_exit(side=side, entry_price=float(row["plan_entry_price"]), stop_price=float(row["plan_stop_price"]), current_stop_price=float(current_stop), current_price=float(price), opened_at=datetime.fromisoformat(row["recorded_at"]), now=now)
+        hold_days = SWING_MAX_HOLDING_DAYS if _row_strategy(row) == "swing" else NEWS_MAX_HOLDING_DAYS
+        action = exits.decide_exit(side=side, entry_price=float(row["plan_entry_price"]), stop_price=float(row["plan_stop_price"]), current_stop_price=float(current_stop), current_price=float(price), opened_at=datetime.fromisoformat(row["recorded_at"]), now=now, max_holding_days=hold_days)
 
         if action.kind == exits.MOVE_BREAKEVEN and action.new_stop_price is not None:
+            if stop_leg_id is None:
+                log.warning("exit_stop_move_impossible_no_leg", decision_id=row["id"], symbol=symbol, wanted_stop=action.new_stop_price, reason=action.reason)
+                continue
             broker.replace_stop(stop_leg_id, action.new_stop_price)
             log.info("exit_move_stop", decision_id=row["id"], symbol=symbol, new_stop=action.new_stop_price, reason=action.reason)
             actions.append(ManageAction(row["id"], symbol, action.kind, action.reason))

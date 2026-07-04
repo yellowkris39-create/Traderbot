@@ -88,3 +88,29 @@ def test_skips_when_position_already_gone():
     actions = manage_open_positions(broker, store, _Log(),
                                     now=datetime(2026, 6, 12, tzinfo=timezone.utc))
     assert not actions
+
+
+class _NoStopBroker(_FakeBroker):
+    """Broker whose bracket stop leg is gone (expired/canceled) — the stuck-
+    position case observed live (8 open, 0 closed for weeks)."""
+    def get_open_stop(self, order_id):
+        return None
+
+
+def test_time_stop_fires_even_without_live_stop_leg():
+    store = _FakeStore([_row()])
+    fill = FilledOrder(fill_price=95.0, filled_at=datetime(2026, 6, 24, tzinfo=timezone.utc))
+    broker = _NoStopBroker(price=95.0, stop=None, fill=fill)
+    now = datetime(2026, 6, 24, tzinfo=timezone.utc)  # 10 trading days after Jun 10
+    actions = manage_open_positions(broker, store, _Log(), now=now)
+    assert broker.flattened == ["AAPL"]
+    assert store.outcomes == [(1, 95.0, "time_stop", -50.0)]
+    assert actions[0].kind == "close_time_stop"
+
+
+def test_no_stop_leg_blocks_stop_moves_but_does_not_crash():
+    store = _FakeStore([_row()])
+    broker = _NoStopBroker(price=102.5, stop=None)  # +1R hit, within time window
+    now = datetime(2026, 6, 12, tzinfo=timezone.utc)
+    actions = manage_open_positions(broker, store, _Log(), now=now)
+    assert not broker.replaced and not broker.flattened and not actions
