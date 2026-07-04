@@ -1,0 +1,10 @@
+[Unit]
+Description=Run the BrokeByte swing executor shortly after US market open (both slots cover DST)
+
+[Timer]
+OnCalendar=Mon..Fri 13:35:00 UTC
+OnCalendar=Mon..Fri 14:35:00 UTC
+Persistent=false
+
+[Install]
+WantedBy=timers.target

@@ -1,0 +1,9 @@
+[Unit]
+Description=BrokeByte swing executor (places bracket orders for pending screener signals)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+WorkingDirectory=/root/Trader
+ExecStart=/root/Trader/venv/bin/python -m brokebyte.screener.executor

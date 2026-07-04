@@ -20,6 +20,7 @@ One-shot mode (testing / manual):
 
 from __future__ import annotations
 
+import os
 import re
 import signal
 import sys
@@ -237,7 +238,16 @@ def _process_event(
     # broker position and no exit fill, so the reconciler would treat it as a
     # forever-open "phantom" position it can never close.
     if decision.action == "ENTER" and decision.plan is not None:
-        if decision.plan.symbol in active_symbols:
+        if os.environ.get("NEWS_ENTRIES_ENABLED", "false").strip().lower() not in ("1", "true", "yes"):
+            # Kris 2026-07-04: news strategy entries PAUSED (never validated);
+            # existing positions still wind down via exit_manager/reconciler.
+            # The validated swing screener trades via brokebyte.screener.executor.
+            decision = gate.GateDecision(
+                plan=None,
+                reason="news entries paused (NEWS_ENTRIES_ENABLED != true)",
+                proposal=decision.proposal,
+            )
+        elif decision.plan.symbol in active_symbols:
             # The portfolio cache has a TTL, so two events for the same symbol
             # can both pass the gate before the first fill appears.  Block the
             # re-entry until the reconciler confirms the position has closed.

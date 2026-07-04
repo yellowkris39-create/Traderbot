@@ -68,6 +68,10 @@ def run(argv: list[str] | None = None) -> None:
     message = alerts.format_digest(results)
     print(message)
     _journal(results, log_dir)
+    from brokebyte.screener import executor
+    n_pending = executor.write_pending(results)
+    if n_pending:
+        print("[screener] queued {} US signal(s) for the market-open executor".format(n_pending))
     if do_send:
         alerts.send(message)
 

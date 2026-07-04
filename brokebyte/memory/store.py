@@ -72,6 +72,7 @@ CREATE TABLE IF NOT EXISTS decisions (
 # onto pre-existing decisions.db files in _migrate so accumulated history
 # isn't lost when the schema grows.
 _OUTCOME_COLUMNS = {
+    "strategy": "TEXT",  # NULL/absent = news bot; 'swing' = screener auto-executor
     "broker_order_id": "TEXT",
     "exit_price": "REAL",
     "exit_reason": "TEXT",
@@ -298,5 +299,57 @@ class DecisionStore:
             conn.commit()
             if cursor.rowcount == 0:
                 raise ValueError(f"no decision with id={decision_id}")
+        finally:
+            conn.close()
+
+    # --- Swing-screener auto-executor support (strategy='swing') -----------
+
+    def record_swing_entry(self, *, symbol: str, side: str, qty: int, entry_price: float, stop_price: float, take_profit_price: float, risk_amount: float, notional: float, reason: str) -> int:
+        """Persist an auto-executed screener trade as an ENTER row tagged
+        strategy='swing'. News-specific columns get neutral stub values (the
+        schema predates multi-strategy support)."""
+        now = datetime.now(timezone.utc).isoformat()
+        conn = self._connect()
+        try:
+            cursor = conn.execute(
+                """
+                INSERT INTO decisions (
+                    recorded_at, event_id, headline, symbols, source,
+                    verdict_material, verdict_symbol, verdict_direction, verdict_confidence,
+                    verdict_time_horizon, verdict_reasoning, verdict_is_already_priced_in,
+                    action, reason, strategy,
+                    plan_side, plan_qty, plan_entry_price, plan_stop_price, plan_take_profit_price,
+                    plan_risk_amount, plan_notional
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (now, "swing-{}-{}".format(symbol, now[:10]), "screener swing signal", symbol, "screener",
+                 1, symbol, "long", 1.0, "swing", reason, 0,
+                 "ENTER", reason, "swing",
+                 side, qty, entry_price, stop_price, take_profit_price, risk_amount, notional),
+            )
+            conn.commit()
+            return int(cursor.lastrowid)
+        finally:
+            conn.close()
+
+    def open_swing_count(self) -> int:
+        """Open (no outcome yet) auto-executed swing positions."""
+        conn = self._connect()
+        try:
+            cursor = conn.execute("SELECT COUNT(*) FROM decisions WHERE strategy='swing' AND action='ENTER' AND pnl IS NULL")
+            return int(cursor.fetchone()[0])
+        finally:
+            conn.close()
+
+    def consecutive_swing_losses(self) -> int:
+        """Trailing run of losing (pnl<0) closed swing trades — the 3-loss
+        circuit breaker input. A break-even close resets the streak."""
+        conn = self._connect()
+        try:
+            cursor = conn.execute("SELECT pnl FROM decisions WHERE strategy='swing' AND pnl IS NOT NULL ORDER BY closed_at, id")
+            streak = 0
+            for row in cursor.fetchall():
+                streak = streak + 1 if row["pnl"] < 0 else 0
+            return streak
         finally:
             conn.close()

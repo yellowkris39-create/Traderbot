@@ -130,7 +130,7 @@ def gather_logs() -> list[str]:
         out.append(f"[{flag}] last 6h: {errors} errors, {warns} warnings")
         # trim the reconcile line to the useful bit
         if "monitor_reconcile" in last_recon:
-            out.append("last reconcile: " + last_recon.split("python[", 1)[-1][:160])
+            out.append("last reconcile: " + last_recon.split("]: ", 1)[-1][:160])
     except Exception as exc:  # noqa: BLE001
         out.append(f"[??] logs: unavailable ({exc})")
     return out

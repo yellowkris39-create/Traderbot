@@ -12,7 +12,17 @@ from unittest.mock import MagicMock, patch
 
 import pandas as pd
 
+import pytest
+
 import brokebyte.main as main
+
+
+@pytest.fixture(autouse=True)
+def _news_entries_enabled(monkeypatch):
+    """These tests exercise the news-bot ENTRY path, which is paused by
+    default since 2026-07-04 (NEWS_ENTRIES_ENABLED). Enable it here; the
+    pause behaviour itself is covered by test_news_entries_paused_*."""
+    monkeypatch.setenv("NEWS_ENTRIES_ENABLED", "true")
 from brokebyte.common import Quote
 from brokebyte.ingestion.events import NewsEvent
 from brokebyte.llm.provider import Direction, LLMVerdict, TimeHorizon
@@ -196,3 +206,16 @@ def test_market_closed_check_skipped_for_plain_hold(tmp_path):
     assert broker.submit_called == 0
     assert memory.open_enter_decisions() == []
     assert memory.recent(1)[0]["action"] == "HOLD"
+
+def test_news_entries_paused_by_default_records_hold(tmp_path, monkeypatch):
+    monkeypatch.delenv("NEWS_ENTRIES_ENABLED", raising=False)
+    memory = DecisionStore(tmp_path / "d.db")
+    broker = _FakeBroker(market_open=True)
+    _run(memory, broker, set(), enter=True)
+
+    assert broker.submit_called == 0
+    assert memory.open_enter_decisions() == []
+    last = memory.recent(1)[0]
+    assert last["action"] == "HOLD"
+    assert "paused" in last["reason"]
+
