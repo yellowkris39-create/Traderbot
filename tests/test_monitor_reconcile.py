@@ -418,3 +418,56 @@ def test_mixed_order_and_symbol_based(tmp_path):
     assert len(outcomes) == 2
     symbols = {o.symbol for o in outcomes}
     assert symbols == {"AAPL", "MSFT"}
+
+
+# ---------------------------------------------------------------------------
+# Flatten/close_position fallback (2026-07-09 fix): a position closed by a
+# NON-bracket order (exit manager flatten, manual close) must still get its
+# outcome booked — observed live as NOK, then EOSE/HR/NBIS/SBRA phantoms.
+# ---------------------------------------------------------------------------
+
+
+def test_order_id_row_with_vanished_position_books_via_symbol_fallback(tmp_path):
+    store = DecisionStore(tmp_path / "d.db")
+    seed_open_enter(store, broker_order_id="ord-hr")
+    fill = FilledOrder(fill_price=95.0, filled_at=datetime(2026, 7, 6, 15, 0, tzinfo=timezone.utc))
+    broker = FakeBroker(
+        open_symbols=set(),                       # position gone from Alpaca
+        exit_orders={"AAPL": fill},               # flatten fill in order history
+        order_exit_fills={"ord-hr": None},        # bracket has no filled exit leg
+    )
+    outcomes = reconcile_open_positions(broker, store)
+    assert len(outcomes) == 1
+    assert outcomes[0].exit_reason == "flattened_or_external"
+    assert outcomes[0].pnl == pytest.approx((95.0 - 100.0) * 10)
+    assert store.open_enter_decisions() == []
+
+
+def test_order_id_row_position_still_open_is_left_alone(tmp_path):
+    store = DecisionStore(tmp_path / "d.db")
+    seed_open_enter(store, broker_order_id="ord-1")
+    broker = FakeBroker(open_symbols={"AAPL"}, exit_orders={}, order_exit_fills={"ord-1": None})
+    assert reconcile_open_positions(broker, store) == []
+    assert len(store.open_enter_decisions()) == 1
+
+
+def test_multi_row_symbol_is_flagged_not_multibooked(tmp_path):
+    """Three open rows for one aggregated position (the live EOSE case) must
+    NOT each book the same exit fill — they need manual cleanup."""
+    store = DecisionStore(tmp_path / "d.db")
+    for oid in ("ord-a", "ord-b", "ord-c"):
+        seed_open_enter(store, broker_order_id=oid)
+    fill = FilledOrder(fill_price=95.0, filled_at=datetime(2026, 7, 6, 15, 0, tzinfo=timezone.utc))
+    broker = FakeBroker(open_symbols=set(), exit_orders={"AAPL": fill},
+                        order_exit_fills={"ord-a": None, "ord-b": None, "ord-c": None})
+    outcomes = reconcile_open_positions(broker, store)
+    assert outcomes == []
+    assert len(store.open_enter_decisions()) == 3  # untouched, flagged in logs
+
+
+def test_fallback_no_fill_found_stays_open(tmp_path):
+    store = DecisionStore(tmp_path / "d.db")
+    seed_open_enter(store, broker_order_id="ord-x")
+    broker = FakeBroker(open_symbols=set(), exit_orders={}, order_exit_fills={"ord-x": None})
+    assert reconcile_open_positions(broker, store) == []
+    assert len(store.open_enter_decisions()) == 1

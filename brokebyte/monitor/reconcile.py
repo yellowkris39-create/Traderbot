@@ -74,12 +74,15 @@ def _record_outcome(
     exit_order: FilledOrder,
     store: DecisionStore,
     log,
+    reason: str | None = None,
 ) -> OutcomeRecord:
-    """Shared logic: compute P&L, persist outcome, return OutcomeRecord."""
+    """Shared logic: compute P&L, persist outcome, return OutcomeRecord.
+    `reason` overrides the stop/TP proximity inference (used when the close
+    came from a flatten/manual order, where proximity labels mislead)."""
     symbol = row["verdict_symbol"]
     plan_side = row["plan_side"] or "buy"
 
-    exit_reason = _infer_exit_reason(
+    exit_reason = reason or _infer_exit_reason(
         exit_order.fill_price,
         float(row["plan_stop_price"]),
         float(row["plan_take_profit_price"]),
@@ -136,6 +139,10 @@ def reconcile_open_positions(
         return []
 
     current_symbols = broker.get_position_symbols()
+    sym_open_counts: dict[str, int] = {}
+    for r in open_decisions:
+        if r["verdict_symbol"]:
+            sym_open_counts[r["verdict_symbol"]] = sym_open_counts.get(r["verdict_symbol"], 0) + 1
     outcomes: list[OutcomeRecord] = []
 
     for row in open_decisions:
@@ -149,9 +156,28 @@ def reconcile_open_positions(
         if order_id:
             # --- Order-based path ---
             exit_order = broker.get_order_exit_fill(order_id)
+            if exit_order is not None:
+                outcomes.append(_record_outcome(row, exit_order, store, log))
+                continue
+            if symbol in current_symbols:
+                continue  # bracket still open; nothing to book yet
+            # Position GONE but the bracket has no filled exit leg: the close
+            # came from close_position()/flatten — a NEW order that is not a
+            # bracket child, so order-based lookup can never see it (observed
+            # live: NOK 2026-06-28, then EOSE/HR/NBIS/SBRA 2026-07-06 after
+            # the exit-manager time-stops). Fall back to the symbol's most
+            # recent exit fill — but ONLY when this is the sole open row for
+            # the symbol, else one fill would book against several rows.
+            if sym_open_counts[symbol] > 1:
+                log.warning("monitor_orphan_needs_manual_cleanup", decision_id=row["id"], symbol=symbol, open_rows=sym_open_counts[symbol])
+                continue
+            recorded_at = datetime.fromisoformat(row["recorded_at"])
+            plan_side = row["plan_side"] or "buy"
+            exit_order = broker.get_filled_exit_order(symbol, recorded_at, plan_side)
             if exit_order is None:
-                continue  # bracket order still open or not yet filled
-            outcomes.append(_record_outcome(row, exit_order, store, log))
+                log.warning("monitor_no_exit_order", decision_id=row["id"], symbol=symbol)
+                continue
+            outcomes.append(_record_outcome(row, exit_order, store, log, reason="flattened_or_external"))
         else:
             # --- Symbol-based fallback (legacy / phantom decisions) ---
             if symbol in current_symbols:

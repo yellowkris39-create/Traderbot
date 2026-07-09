@@ -225,3 +225,28 @@ def test_fx_applied_in_sizing():
     # shares_by_risk = floor(6.25/5, 2) = 1.25 ; exposure cap £100*1.25=$125/100=1.25
     p = size_trade_gbp(100.0, 95.0, fx_per_gbp=1.25, max_position_pct=10.0)
     assert p is not None and p.shares == 1.25
+
+
+def test_funnel_stage_classification():
+    from brokebyte.screener.screen import Screener
+    f = Screener._funnel_stage
+    assert f(["insufficient history (<210 bars)"]) == "data"
+    assert f(["price 3.2 outside [5.0, 200.0]"]) == "universe"
+    assert f(["earnings date unknown (fail-closed)"]) == "universe"
+    assert f(["price not above 50SMA"]) == "trend"
+    assert f(["pullback 1.2% outside 3-10%"]) == "setup"
+    assert f(["RSI 65.0 outside [40.0, 60.0]"]) == "setup"
+    assert f(["does not outperform index"]) == "setup"
+    assert f(["RSI did not cross back above 40"]) == "trigger"
+    assert f(["no bullish reversal candle"]) == "trigger"
+
+
+def test_scan_populates_funnel_stats():
+    from brokebyte.screener.screen import Screener
+    provider = _FakeProvider(_trend_bars(), _trend_bars(), Fundamentals(2e9, 1.1, None, "USD"))
+    s = Screener(provider, account=500.0)
+    s.scan(["AAPL"])
+    stats = s.last_scan_stats
+    assert stats["scanned"] == 1
+    assert stats["passed"] + sum(stats[k] for k in ("regime_blocked", "fetch_failed", "data", "universe", "trend", "setup", "trigger")) == 1
+    assert "funnel:" in Screener.format_scan_stats(stats)

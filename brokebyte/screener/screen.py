@@ -185,11 +185,31 @@ class Screener:
         rate = self._fx_cache[currency]
         return rate if rate else 1.0
 
+    @staticmethod
+    def _funnel_stage(failures: list[str]) -> str:
+        """Coarse first-failure classification for the scan funnel stats."""
+        first = failures[0] if failures else ""
+        if "insufficient history" in first or "indicator error" in first:
+            return "data"
+        if "earnings" in first or "market cap" in first or "avg volume" in first or "beta" in first or (first.startswith("price ") and "outside" in first):
+            return "universe"
+        if "SMA" in first or "EMA" in first:
+            return "trend"
+        if "pullback" in first or ("RSI" in first and "cross" not in first) or "outperform" in first:
+            return "setup"
+        return "trigger"
+
     def scan(self, symbols: list[str], *, now: datetime | None = None) -> list[ScreenResult]:
-        """Evaluate every symbol; return only the ones that qualify."""
+        """Evaluate every symbol; return only the ones that qualify.
+        Side effect: self.last_scan_stats holds the per-stage funnel tallies so
+        a quiet night is verifiable (real no-setups vs a broken filter)."""
         results: list[ScreenResult] = []
+        stats = {"scanned": 0, "regime_blocked": 0, "fetch_failed": 0,
+                 "data": 0, "universe": 0, "trend": 0, "setup": 0, "trigger": 0, "passed": 0}
         for sym in symbols:
+            stats["scanned"] += 1
             if not self.index_regime_ok(sym):
+                stats["regime_blocked"] += 1
                 continue  # index below 200SMA -> no new entries for that market
             try:
                 bars = self._provider.daily_bars(sym)
@@ -197,9 +217,19 @@ class Screener:
                 index_bars = self._index_bars(sym)
                 fx = self._fx_per_gbp(funds.currency)
             except Exception:
+                stats["fetch_failed"] += 1
                 continue
             res = evaluate_symbol(sym, bars, index_bars, funds,
                                   account=self._account, now=now, fx_per_gbp=fx)
             if res.passed:
+                stats["passed"] += 1
                 results.append(res)
+            else:
+                stats[self._funnel_stage(res.failures)] += 1
+        self.last_scan_stats = stats
         return results
+
+    @staticmethod
+    def format_scan_stats(stats: dict) -> str:
+        return ("funnel: scanned {scanned} | regime-blocked {regime_blocked} | fetch-failed {fetch_failed} | "
+                "data {data} | universe {universe} | trend {trend} | setup {setup} | trigger {trigger} | PASSED {passed}").format(**stats)

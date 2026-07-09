@@ -66,6 +66,9 @@ def run(argv: list[str] | None = None) -> None:
     results = screener.scan(universe)
 
     message = alerts.format_digest(results)
+    stats = getattr(screener, "last_scan_stats", None)
+    if stats:
+        message = message + "\n" + type(screener).format_scan_stats(stats)
     print(message)
     _journal(results, log_dir)
     from brokebyte.screener import executor
