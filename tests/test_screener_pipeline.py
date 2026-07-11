@@ -232,7 +232,8 @@ def test_funnel_stage_classification():
     f = Screener._funnel_stage
     assert f(["insufficient history (<210 bars)"]) == "data"
     assert f(["price 3.2 outside [5.0, 200.0]"]) == "universe"
-    assert f(["earnings date unknown (fail-closed)"]) == "universe"
+    assert f(["earnings date unknown (fail-closed)"]) == "universe_earnings"
+    assert f(["earnings in 3d (<= 7)"]) == "universe_earnings"
     assert f(["price not above 50SMA"]) == "trend"
     assert f(["pullback 1.2% outside 3-10%"]) == "setup"
     assert f(["RSI 65.0 outside [40.0, 60.0]"]) == "setup"
@@ -248,5 +249,5 @@ def test_scan_populates_funnel_stats():
     s.scan(["AAPL"])
     stats = s.last_scan_stats
     assert stats["scanned"] == 1
-    assert stats["passed"] + sum(stats[k] for k in ("regime_blocked", "fetch_failed", "data", "universe", "trend", "setup", "trigger")) == 1
+    assert stats["passed"] + sum(stats[k] for k in ("regime_blocked", "fetch_failed", "data", "universe", "universe_earnings", "trend", "setup", "trigger")) == 1
     assert "funnel:" in Screener.format_scan_stats(stats)

@@ -191,7 +191,9 @@ class Screener:
         first = failures[0] if failures else ""
         if "insufficient history" in first or "indicator error" in first:
             return "data"
-        if "earnings" in first or "market cap" in first or "avg volume" in first or "beta" in first or (first.startswith("price ") and "outside" in first):
+        if "earnings" in first:
+            return "universe_earnings"
+        if "market cap" in first or "avg volume" in first or "beta" in first or (first.startswith("price ") and "outside" in first):
             return "universe"
         if "SMA" in first or "EMA" in first:
             return "trend"
@@ -204,8 +206,8 @@ class Screener:
         Side effect: self.last_scan_stats holds the per-stage funnel tallies so
         a quiet night is verifiable (real no-setups vs a broken filter)."""
         results: list[ScreenResult] = []
-        stats = {"scanned": 0, "regime_blocked": 0, "fetch_failed": 0,
-                 "data": 0, "universe": 0, "trend": 0, "setup": 0, "trigger": 0, "passed": 0}
+        stats = {"scanned": 0, "regime_blocked": 0, "fetch_failed": 0, "data": 0,
+                 "universe": 0, "universe_earnings": 0, "trend": 0, "setup": 0, "trigger": 0, "passed": 0}
         for sym in symbols:
             stats["scanned"] += 1
             if not self.index_regime_ok(sym):
@@ -232,4 +234,5 @@ class Screener:
     @staticmethod
     def format_scan_stats(stats: dict) -> str:
         return ("funnel: scanned {scanned} | regime-blocked {regime_blocked} | fetch-failed {fetch_failed} | "
-                "data {data} | universe {universe} | trend {trend} | setup {setup} | trigger {trigger} | PASSED {passed}").format(**stats)
+                "data {data} | universe {universe} (+{universe_earnings} earnings-blocked) | "
+                "trend {trend} | setup {setup} | trigger {trigger} | PASSED {passed}").format(**stats)
