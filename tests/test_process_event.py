@@ -219,3 +219,22 @@ def test_news_entries_paused_by_default_records_hold(tmp_path, monkeypatch):
     assert last["action"] == "HOLD"
     assert "paused" in last["reason"]
 
+
+
+def test_news_pipeline_disabled_makes_no_llm_call_and_no_db_row(tmp_path, monkeypatch):
+    monkeypatch.setenv("NEWS_PIPELINE_ENABLED", "false")
+    memory = DecisionStore(tmp_path / "d.db")
+    broker = _FakeBroker(market_open=True)
+
+    class _ExplodingProvider:
+        def evaluate(self, event, historical_context=""):
+            raise AssertionError("LLM must not be called when pipeline disabled")
+
+    event = NewsEvent(id="evt-off", headline="X", summary="s", symbols=["AAPL"], source="test")
+    main._process_event(
+        event, broker, _FakeMarketData(), _ExplodingProvider(), _FakeCircuitBreaker(),
+        memory, load_risk_limits(), main.get_logger("test"),
+        main._PortfolioCache(ttl=30), set(),
+    )
+    assert memory.count() == 0
+    assert broker.submit_called == 0

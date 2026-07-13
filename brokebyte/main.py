@@ -154,6 +154,15 @@ def _process_event(
     from event.symbols[0]) so the gate's ATR, regime, liquidity, and sizing
     checks always use the correct instrument's market data.
     """
+    # NEWS_PIPELINE_ENABLED=false skips ALL per-event work — no Haiku/Sonnet
+    # API calls, no gate, no DB row — while the stream, exit manager,
+    # reconciler, and health reporting keep running (none of them use the
+    # LLM). This is the "£0/day" switch: with news ENTRIES already paused,
+    # the verdicts were pure cost. Flip to true to resume news analysis.
+    if os.environ.get("NEWS_PIPELINE_ENABLED", "true").strip().lower() not in ("1", "true", "yes"):
+        log.info("news_pipeline_disabled_skip", event_id=event.id)
+        return
+
     portfolio = portfolio_cache.get(broker)
 
     log.info(
