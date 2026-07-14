@@ -23,6 +23,7 @@ def _news_entries_enabled(monkeypatch):
     default since 2026-07-04 (NEWS_ENTRIES_ENABLED). Enable it here; the
     pause behaviour itself is covered by test_news_entries_paused_*."""
     monkeypatch.setenv("NEWS_ENTRIES_ENABLED", "true")
+    monkeypatch.setenv("NEWS_PIPELINE_ENABLED", "true")
 from brokebyte.common import Quote
 from brokebyte.ingestion.events import NewsEvent
 from brokebyte.llm.provider import Direction, LLMVerdict, TimeHorizon
