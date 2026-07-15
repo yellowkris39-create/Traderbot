@@ -126,6 +126,21 @@ def extract_next_earnings(calendar, now: datetime | None = None) -> datetime | N
     return min(dates) if dates else None
 
 
+def is_rate_limit_error(exc: Exception) -> bool:
+    """Version-agnostic yfinance rate-limit detection (YFRateLimitError by
+    name, or the telltale message)."""
+    if type(exc).__name__ == "YFRateLimitError":
+        return True
+    msg = str(exc).lower()
+    return "rate limit" in msg or "too many requests" in msg
+
+
+# Backoff schedule (seconds) between retries when Yahoo rate-limits. Nightly
+# batch job — waiting minutes is fine, dying is not (2026-07-14 incident:
+# YFRateLimitError killed the whole scan).
+RETRY_SLEEPS = (30.0, 90.0, 180.0)
+
+
 class YFinanceProvider:
     """Concrete DataProvider backed by yfinance."""
 
@@ -136,12 +151,30 @@ class YFinanceProvider:
     def _ticker(self, symbol: str):
         return self._yf.Ticker(symbol)
 
+    def _with_retry(self, fn):
+        """Run fn(); on a rate-limit error sleep and retry per RETRY_SLEEPS,
+        then re-raise. Non-rate-limit errors propagate immediately."""
+        import time
+        for pause in RETRY_SLEEPS:
+            try:
+                return fn()
+            except Exception as exc:  # noqa: BLE001
+                if not is_rate_limit_error(exc):
+                    raise
+                time.sleep(pause)
+        return fn()
+
     def daily_bars(self, symbol: str, lookback_days: int = 400) -> pd.DataFrame:
-        t = self._ticker(symbol)
-        raw = t.history(period=_period_for(lookback_days), interval="1d", auto_adjust=False)
-        return normalize_bars(raw, extract_currency(t.fast_info))
+        def _fetch():
+            t = self._ticker(symbol)
+            raw = t.history(period=_period_for(lookback_days), interval="1d", auto_adjust=False)
+            return normalize_bars(raw, extract_currency(t.fast_info))
+        return self._with_retry(_fetch)
 
     def fundamentals(self, symbol: str) -> Fundamentals:
+        return self._with_retry(lambda: self._fundamentals_once(symbol))
+
+    def _fundamentals_once(self, symbol: str) -> Fundamentals:
         t = self._ticker(symbol)
         fast = t.fast_info
         currency = extract_currency(fast)

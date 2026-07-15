@@ -215,12 +215,21 @@ class Screener:
         stats = {"scanned": 0, "regime_blocked": 0, "fetch_failed": 0, "data": 0,
                  "universe_price": 0, "universe_cap": 0, "universe_volume": 0, "universe_beta": 0,
                  "universe_earnings": 0, "trend": 0, "setup": 0, "trigger": 0, "passed": 0}
+        import os as _os
+        import time as _time
+        delay = float(_os.environ.get("SCREENER_SYMBOL_DELAY", "0.4"))
+        first = True
         for sym in symbols:
+            if not first and delay > 0:
+                _time.sleep(delay)  # be polite to Yahoo: ~6min/850 symbols beats a rate-limit death
+            first = False
             stats["scanned"] += 1
-            if not self.index_regime_ok(sym):
-                stats["regime_blocked"] += 1
-                continue  # index below 200SMA -> no new entries for that market
             try:
+                # regime fetch is a network call too — 2026-07-14 a rate-limit
+                # here escaped the handler and killed the whole scan.
+                if not self.index_regime_ok(sym):
+                    stats["regime_blocked"] += 1
+                    continue  # index below 200SMA -> no new entries for that market
                 bars = self._provider.daily_bars(sym)
                 funds = self._provider.fundamentals(sym)
                 index_bars = self._index_bars(sym)

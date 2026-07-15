@@ -74,3 +74,35 @@ def test_no_truncated_functions_in_brokebyte():
                 if isinstance(last, ast.Expr) and isinstance(last.value, ast.Name):
                     offenders.append(f"{path}:{last.lineno} {node.name} ends in bare name")
     assert not offenders, "; ".join(offenders)
+
+
+def test_rate_limit_detection():
+    class YFRateLimitError(Exception):
+        pass
+    assert yp.is_rate_limit_error(YFRateLimitError("x"))
+    assert yp.is_rate_limit_error(RuntimeError("Too Many Requests. Rate limited."))
+    assert not yp.is_rate_limit_error(RuntimeError("connection reset"))
+
+
+def test_with_retry_recovers_from_rate_limit(monkeypatch):
+    import time as _time
+    sleeps = []
+    monkeypatch.setattr(_time, "sleep", lambda s: sleeps.append(s))
+    prov = yp.YFinanceProvider.__new__(yp.YFinanceProvider)
+    calls = {"n": 0}
+    def flaky():
+        calls["n"] += 1
+        if calls["n"] < 3:
+            raise RuntimeError("Rate limited. Try after a while.")
+        return "ok"
+    assert prov._with_retry(flaky) == "ok"
+    assert calls["n"] == 3 and len(sleeps) == 2
+
+
+def test_with_retry_propagates_other_errors_immediately(monkeypatch):
+    import time as _time
+    monkeypatch.setattr(_time, "sleep", lambda s: (_ for _ in ()).throw(AssertionError("must not sleep")))
+    prov = yp.YFinanceProvider.__new__(yp.YFinanceProvider)
+    import pytest as _pytest
+    with _pytest.raises(ValueError):
+        prov._with_retry(lambda: (_ for _ in ()).throw(ValueError("boom")))
