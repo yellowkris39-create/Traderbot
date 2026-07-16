@@ -11,7 +11,10 @@ from dataclasses import dataclass, field
 
 # --- Universe / liquidity thresholds ---
 MIN_PRICE = 5.0
-MAX_PRICE = 200.0
+MAX_PRICE = 1000.0  # raised from 200 (Kris, 2026-07-16): the $200 cap was a relic of
+# the abandoned £500 whole-share plan and blocked 356/853 symbols nightly (42%, funnel
+# 2026-07-15). Sizing still enforces affordability (whole shares + 20% exposure cap).
+# The validated backtest had NO price filter, so raising this REDUCES config drift.
 MIN_MARKET_CAP = 500_000_000.0   # £500M / $500M
 MIN_AVG_VOLUME = 1_000_000.0     # locked decision: 1M shares
 MAX_BETA = 1.5

@@ -226,3 +226,11 @@ def test_trailing_stop_short_side():
         current_price=90, opened_at=datetime(2026, 6, 10), now=datetime(2026, 6, 12),
     )
     assert a.kind == exits.MOVE_BREAKEVEN and a.new_stop_price == 91.8
+
+
+def test_universe_price_cap_raised_to_1000():
+    """Kris 2026-07-16: $200 cap (blocking 42% of the universe) raised to $1000."""
+    r = rules.check_universe(price=450, market_cap=2e12, avg_volume=5e6, beta=1.2, days_to_earnings=30)
+    assert r.passed
+    r = rules.check_universe(price=1500, market_cap=2e12, avg_volume=5e6, beta=1.2, days_to_earnings=30)
+    assert not r.passed and any("price" in f for f in r.failures)
